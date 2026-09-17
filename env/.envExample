@@ -3,8 +3,7 @@ NODE_ENV=development
 
 # Base URL of the backend REST API, including the /app/v1 prefix.
 # Points at wherever the certificate-application-api backend is running.
-API_URL=http://localhost:3377/app/v1
-NEXT_PUBLIC_API_URL=http://localhost:3377/app/v1
+API_URL=http://192.168.1.44:3377/app/v1
 
 # Port where the app will run
 APP_PORT=4455
