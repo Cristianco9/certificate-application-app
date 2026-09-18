@@ -2,8 +2,13 @@
 
 import { cookies } from "next/headers";
 
+import { LANDING_BY_ROLE } from "@/permissions/roles";
+import type { BackendRole } from "@/permissions/roles";
+import type { MeResponse } from "@/types/auth";
+
 const API_URL = process.env.API_URL ?? "";
 const API_KEY = process.env.API_KEY ?? "";
+const COOKIE_NAME = process.env.COOKIE_NAME ?? "authentication";
 
 const MESSAGES = {
   invalidCredentials: "Los datos ingresados no son válidos",
@@ -11,10 +16,9 @@ const MESSAGES = {
     "El sistema está experimentando problemas. Por favor, inténtelo de nuevo más tarde.",
 } as const;
 
-export type LoginActionResult = {
-  success: boolean;
-  message: string;
-};
+export type LoginActionResult =
+  | { success: true; message: string; redirectTo: string }
+  | { success: false; message: string };
 
 export async function loginAction(
   username: string,
@@ -37,11 +41,10 @@ export async function loginAction(
     });
 
     // 401 → invalid credentials. The backend deliberately returns the same
-    // shape for "user not found" and "wrong password" (see types/auth.ts).
+    // shape for "user not found" and "wrong password".
     if (apiResponse.status === 400 || apiResponse.status === 401) {
       return { success: false, message: MESSAGES.invalidCredentials };
     }
-
 
     // Anything else non-2xx → treat as a system problem.
     if (!apiResponse.ok) {
@@ -61,13 +64,87 @@ export async function loginAction(
       }
     }
 
-    return { success: true, message: "Sesión iniciada correctamente" };
+    // Resolve the role so the caller knows where to land. The login
+    // response does not carry the role — the JWT is httpOnly and the
+    // backend returns only `{ success, message }`. We call /auth/me
+    // ourselves, passing the freshly-issued cookie explicitly (the Server
+    // Action's `cookies()` jar is response-only and does not feed the
+    // request store).
+    const redirectTo = await resolveLandingPath(setCookieHeaders);
+
+    return {
+      success: true,
+      message: "Sesión iniciada correctamente",
+      redirectTo: redirectTo ?? "/dashboard",
+    };
   } catch {
     return { success: false, message: MESSAGES.systemError };
   }
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
 type CookieJar = Awaited<ReturnType<typeof cookies>>;
+
+/**
+ * Reads the role from `GET /auth/me` using the token that was just issued
+ * and returns the corresponding landing path.
+ *
+ * Returns `null` on any failure — misconfiguration, network error, an
+ * unexpected payload — so the caller can fall back to `/dashboard` and let
+ * the layout guard sort out the destination. Failing to log the user in
+ * because we couldn't guess their landing page would be worse than landing
+ * on the wrong page.
+ */
+async function resolveLandingPath(
+  setCookieHeaders: string[]
+): Promise<string | null> {
+  const token = extractCookieValue(setCookieHeaders, COOKIE_NAME);
+  if (!token) return null;
+
+  try {
+    const meRes = await fetch(`${API_URL}/auth/me`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        apikey: API_KEY,
+        Cookie: `${COOKIE_NAME}=${token}`,
+      },
+      cache: "no-store",
+    });
+
+    if (!meRes.ok) return null;
+
+    const me = (await meRes.json()) as MeResponse;
+    if (!me.success) return null;
+
+    return LANDING_BY_ROLE[me.role as BackendRole] ?? "/dashboard";
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Finds `<name>=<value>` in a `Set-Cookie` header list and returns the
+ * value with all attributes stripped.
+ */
+function extractCookieValue(
+  setCookieHeaders: string[],
+  name: string
+): string | null {
+  const prefix = `${name}=`;
+  const header = setCookieHeaders.find((raw) =>
+    raw.trim().toLowerCase().startsWith(prefix.toLowerCase())
+  );
+  if (!header) return null;
+
+  const value = header
+    .slice(header.indexOf("=") + 1)
+    .split(";")[0]
+    .trim();
+
+  return value || null;
+}
 
 function forwardSetCookie(jar: CookieJar, raw: string): void {
   const [pair, ...attributes] = raw.split(";").map((part) => part.trim());
