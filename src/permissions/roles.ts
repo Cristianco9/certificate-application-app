@@ -137,3 +137,18 @@ export function isPersona(value: unknown): value is Persona {
     (PERSONAS as readonly string[]).includes(value)
   );
 }
+
+/**
+ * Where each backend role lands after a successful login.
+ *
+ * This is the single source of truth for post-login routing. Both the
+ * login Server Action and any future "send me to my home" links read
+ * from this map — never hard-code a landing path anywhere else.
+ */
+export const LANDING_BY_ROLE: Record<BackendRole, string> = {
+  'Máster': '/dashboard',
+  'Administrador': '/dashboard',
+  'Funcionario': '/dashboard',
+  'Rector': '/dashboard',
+  'Auxiliar': '/academic-registry',
+};
