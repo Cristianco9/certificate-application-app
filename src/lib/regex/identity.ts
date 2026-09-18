@@ -13,4 +13,4 @@ export const ID_PATTERN = /^\d{1,10}$/;
  * separate constant so it can diverge (e.g. alphanumeric passports) without
  * affecting entity IDs.
  */
-export const DOCUMENT_NUMBER_PATTERN = /^\d{1,10}$/;
+export const DOCUMENT_NUMBER_PATTERN = /^(\d{6,10}|[a-zA-Z0-9]{6,20})$/;
