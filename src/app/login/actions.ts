@@ -25,7 +25,7 @@ export async function loginAction(
   }
 
   try {
-    const apiResponse = await fetch(`${API_URL}/users/login`, {
+    const apiResponse = await fetch(`${API_URL}/auth/login`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
