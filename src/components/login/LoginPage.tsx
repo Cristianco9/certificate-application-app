@@ -68,7 +68,7 @@ export function LoginPage() {
         return;
       }
 
-      router.replace("/dashboard");;
+      router.replace(result.redirectTo);
       router.refresh();
     } catch {
       setError(MESSAGES.systemError);
