@@ -14,5 +14,5 @@ export function proxy(request: NextRequest) {
 export const config = {
   // Only run on protected prefixes. Public routes (/, /welcome, /login,
   // /forgot-password, /unauthorized) never hit this.
-  matcher: ["/dashboard/:path*"],
+  matcher: ["/dashboard/:path*", "/academic-registry/:path*"],
 };
