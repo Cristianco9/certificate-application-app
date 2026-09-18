@@ -16,17 +16,37 @@ const API_KEY = process.env.API_KEY ?? "";
 const COOKIE_NAME = process.env.COOKIE_NAME ?? "";
 
 /**
- * Reads the httpOnly `authentication` cookie and asks the backend to
- * validate it. Returns `null` for every failure mode — missing cookie,
- * misconfiguration, network error, expired/invalid token — because the
- * caller's only job is "is there a valid session or not?".
+ * Why the session could not be established. Mirrors the `error` codes the
+ * backend returns from `GET /auth/me`, plus two client-side causes we need
+ * to distinguish for user-facing copy.
  */
-export async function getSession(): Promise<AuthenticatedUser | null> {
-  if (!API_URL || !API_KEY) return null;
+export type SessionFailureReason =
+  | "AUTHENTICATION_REQUIRED"
+  | "TOKEN_EXPIRED"
+  | "INVALID_TOKEN"
+  | "NETWORK_ERROR"
+  | "MISCONFIGURED";
+
+export type SessionState =
+  | { status: "authenticated"; user: AuthenticatedUser }
+  | { status: "unauthenticated"; reason: SessionFailureReason };
+
+/**
+ * Full session state, including the *reason* for failure. Use this in
+ * user-facing screens (e.g. /unauthorized) that need to explain what
+ * happened. Use `getSession()` / `requireUser()` in guards, where only
+ * "is there a valid session" matters.
+ */
+export async function getSessionState(): Promise<SessionState> {
+  if (!API_URL || !API_KEY || !COOKIE_NAME) {
+    return { status: "unauthenticated", reason: "MISCONFIGURED" };
+  }
 
   const cookieStore = await cookies();
   const token = cookieStore.get(COOKIE_NAME)?.value;
-  if (!token) return null;
+  if (!token) {
+    return { status: "unauthenticated", reason: "AUTHENTICATION_REQUIRED" };
+  }
 
   try {
     const res = await fetch(`${API_URL}/auth/me`, {
@@ -39,34 +59,64 @@ export async function getSession(): Promise<AuthenticatedUser | null> {
       cache: "no-store",
     });
 
-    if (!res.ok) return null;
+    // The backend signals auth failures via `success: false` + an error code,
+    // which is the authoritative signal — regardless of the HTTP status it
+    // chose to pair it with. Parse first, decide second.
+    let body: MeResponse | null = null;
+    try {
+      body = (await res.json()) as MeResponse;
+    } catch {
+      // Body isn't JSON → can't be a Me response. Fall through.
+    }
 
-    const data = (await res.json()) as MeResponse;
-    if (!data.success) return null;
+    if (body && body.success === false) {
+      return { status: "unauthenticated", reason: body.error };
+    }
 
-    return { id: data.id, role: data.role };
+    if (!res.ok) {
+      return { status: "unauthenticated", reason: "NETWORK_ERROR" };
+    }
+
+    if (!body || body.success !== true) {
+      return { status: "unauthenticated", reason: "INVALID_TOKEN" };
+    }
+
+    return {
+      status: "authenticated",
+      user: { id: body.id, role: body.role },
+    };
   } catch {
-    // Network failure → treat as unauthenticated. The next request will
-    // retry, and the user is bounced to /login either way.
-    return null;
+    return { status: "unauthenticated", reason: "NETWORK_ERROR" };
   }
 }
 
-/**
- * Guard for "any authenticated user". Redirects to /login otherwise.
- * Call at the top of a layout/page; the return value is the verified user.
- */
-export async function requireUser(): Promise<AuthenticatedUser> {
-  const user = await getSession();
-  if (!user) redirect("/login");
-  return user;
+/** Thin wrapper kept for existing callers. */
+export async function getSession(): Promise<AuthenticatedUser | null> {
+  const state = await getSessionState();
+  return state.status === "authenticated" ? state.user : null;
 }
 
-/**
- * Guard for "authenticated AND has one of the allowed roles".
- * `redirect()` must stay outside the try/catch above — it throws a control-
- * flow error that a catch block would swallow.
- */
+export async function requireUser(): Promise<AuthenticatedUser> {
+  const state = await getSessionState();
+
+  if (state.status === "authenticated") {
+    return state.user;
+  }
+
+  // No cookie at all → the visitor isn't signed in. This is a normal,
+  // unremarkable state: send them straight to login. There is no failed
+  // action to explain, and /unauthorized would just add a click.
+  if (state.reason === "AUTHENTICATION_REQUIRED") {
+    redirect("/login");
+  }
+
+  // A cookie *was* presented but the API rejected it — expired, revoked,
+  // or malformed. The user believed they had a session; that belief was
+  // wrong. Explain what happened on /unauthorized rather than silently
+  // bouncing them to /login as if nothing occurred.
+  redirect("/unauthorized");
+}
+
 export async function requireRole(
   allowed: readonly UserRole[]
 ): Promise<AuthenticatedUser> {
