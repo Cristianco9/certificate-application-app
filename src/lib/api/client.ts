@@ -1,144 +1,138 @@
-import { ApiConfigurationError, createApiError } from "@/lib/api/errors";
-import type {
-  ApiClientConfig,
-  ApiRequestOptions,
-  HttpMethod,
-  QueryParams,
-} from "@/lib/api/types";
+import { getToken, setToken, removeToken } from "@/lib/auth/token";
 
-const jsonContentType = "application/json";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
 
-export class ApiClient {
-  private readonly baseUrl: string;
-  private readonly defaultHeaders?: HeadersInit;
-  private readonly getAuthToken?: ApiClientConfig["getAuthToken"];
+type RequestOptions = RequestInit & {
+  /**
+   * When `true` (default), the stored JWT is attached as a
+   * `Bearer` token, and any rotated token returned by the API is
+   * persisted to `localStorage`.
+   *
+   * Set to `false` for public endpoints (login, reset-password)
+   * that do not require — or return — a session token. Their
+   * responses are handled explicitly by the caller (the login
+   * Server Action, for example) rather than auto-persisted here.
+   */
+  authenticated?: boolean;
+};
 
-  constructor(config: ApiClientConfig) {
-    this.baseUrl = config.baseUrl.replace(/\/$/, "");
-    this.defaultHeaders = config.defaultHeaders;
-    this.getAuthToken = config.getAuthToken;
+export async function apiClient(
+  endpoint: string,
+  options: RequestOptions = {}
+): Promise<Response> {
+  const { authenticated = true, headers, ...fetchOptions } = options;
+
+  const requestHeaders = new Headers(headers);
+
+  requestHeaders.set("Accept", "application/json");
+
+  /*
+   * Only default the Content-Type to JSON when the caller did not
+   * supply a body whose shape dictates otherwise.
+   *
+   * FormData (used by the historical-import upload) must NOT be
+   * forced to application/json — the browser has to set the
+   * multipart boundary itself, and overriding it breaks the
+   * upload at the server.
+   */
+  const isFormData =
+    typeof FormData !== "undefined" &&
+    fetchOptions.body instanceof FormData;
+
+  if (!isFormData && !requestHeaders.has("Content-Type")) {
+    requestHeaders.set("Content-Type", "application/json");
   }
 
-  get<TResponse>(
-    path: string,
-    options?: ApiRequestOptions
-  ): Promise<TResponse> {
-    return this.request<TResponse>("GET", path, options);
+  if (API_KEY) {
+    requestHeaders.set("apikey", API_KEY);
   }
 
-  post<TResponse, TBody = unknown>(
-    path: string,
-    options?: ApiRequestOptions<TBody>
-  ): Promise<TResponse> {
-    return this.request<TResponse, TBody>("POST", path, options);
-  }
+  if (authenticated) {
+    const token = getToken();
 
-  put<TResponse, TBody = unknown>(
-    path: string,
-    options?: ApiRequestOptions<TBody>
-  ): Promise<TResponse> {
-    return this.request<TResponse, TBody>("PUT", path, options);
-  }
-
-  patch<TResponse, TBody = unknown>(
-    path: string,
-    options?: ApiRequestOptions<TBody>
-  ): Promise<TResponse> {
-    return this.request<TResponse, TBody>("PATCH", path, options);
-  }
-
-  delete<TResponse>(
-    path: string,
-    options?: ApiRequestOptions
-  ): Promise<TResponse> {
-    return this.request<TResponse>("DELETE", path, options);
-  }
-
-  private async request<TResponse, TBody = unknown>(
-    method: HttpMethod,
-    path: string,
-    options: ApiRequestOptions<TBody> = {}
-  ): Promise<TResponse> {
-    const headers = new Headers(this.defaultHeaders);
-    mergeHeaders(headers, options.headers);
-
-    const token = options.token ?? (await this.getAuthToken?.());
     if (token) {
-      headers.set("Authorization", `Bearer ${token}`);
+      requestHeaders.set("Authorization", `Bearer ${token}`);
     }
-
-    const body = serializeBody(options.body, headers);
-    const response = await fetch(this.createUrl(path, options.query), {
-      body,
-      headers,
-      method,
-      signal: options.signal,
-    });
-
-    if (!response.ok) {
-      throw await createApiError(response);
-    }
-
-    if (response.status === 204) {
-      return undefined as TResponse;
-    }
-
-    return (await response.json()) as TResponse;
   }
 
-  private createUrl(path: string, query?: QueryParams): string {
-    if (!this.baseUrl) {
-      throw new ApiConfigurationError(
-        "API base URL is not configured. Set NEXT_PUBLIC_API_URL for browser requests or API_URL for server-side requests."
-      );
+  const response = await fetch(`${API_URL}${endpoint}`, {
+    ...fetchOptions,
+    headers: requestHeaders,
+  });
+
+  /*
+   * ── Token rotation ──────────────────────────────────────────
+   *
+   * The backend rotates the JWT on every authenticated request
+   * and returns the replacement in the response body under the
+   * `authentication` key (see `AuthenticatedApiResponse` in
+   * `@/types/api`).
+   *
+   * Only rotate on a successful response — a failed request must
+   * not mint a new session.
+   */
+  if (authenticated && response.ok) {
+    const rotatedToken = await readRotatedToken(response);
+
+    if (rotatedToken) {
+      setToken(rotatedToken);
     }
-
-    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-    const url = new URL(`${this.baseUrl}${normalizedPath}`);
-
-    if (!query) {
-      return url.toString();
-    }
-
-    for (const [key, value] of Object.entries(query)) {
-      if (value === undefined || value === null) {
-        continue;
-      }
-
-      if (Array.isArray(value)) {
-        value.forEach((entry) => url.searchParams.append(key, String(entry)));
-      } else {
-        url.searchParams.set(key, String(value));
-      }
-    }
-
-    return url.toString();
   }
+
+  /*
+   * The API rejected the session (missing, expired, or revoked).
+   * Clear the local token so the next navigation sends the user
+   * back through the login flow rather than retrying with a
+   * known-bad credential.
+   */
+  if (response.status === 401) {
+    removeToken();
+  }
+
+  return response;
 }
 
-function mergeHeaders(headers: Headers, input?: HeadersInit): void {
-  if (!input) {
-    return;
+/**
+ * Best-effort extraction of the rotated JWT from a successful
+ * API response.
+ *
+ * Returns `null` — never throws — when the response has no body,
+ * is not JSON, or does not carry an `authentication` field. This
+ * keeps binary downloads (`reprintCertificate`), 204 responses,
+ * and non-JSON error bodies safe to pass through the client
+ * without special-casing them at every call site.
+ */
+async function readRotatedToken(
+  response: Response
+): Promise<string | null> {
+  const contentType = response.headers.get("content-type");
+
+  if (!contentType?.includes("application/json")) {
+    return null;
   }
 
-  new Headers(input).forEach((value, key) => headers.set(key, value));
-}
+  try {
+    /*
+     * `Response.body` can only be consumed once, and the caller
+     * still needs the original. Clone it so parsing here does not
+     * starve the consumer downstream.
+     */
+    const cloned = response.clone();
+    const payload = (await cloned.json()) as unknown;
 
-function serializeBody<TBody>(
-  body: TBody | undefined,
-  headers: Headers
-): BodyInit | undefined {
-  if (body === undefined || body === null) {
-    return undefined;
+    if (
+      payload !== null &&
+      typeof payload === "object" &&
+      "authentication" in payload &&
+      typeof (payload as { authentication: unknown }).authentication ===
+        "string"
+    ) {
+      return (payload as { authentication: string }).authentication;
+    }
+
+    return null;
+  } catch {
+    return null;
   }
-
-  if (body instanceof FormData) {
-    return body;
-  }
-
-  if (!headers.has("Content-Type")) {
-    headers.set("Content-Type", jsonContentType);
-  }
-
-  return JSON.stringify(body);
 }
