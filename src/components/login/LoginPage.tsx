@@ -11,6 +11,8 @@ import { AuthBrandPanel } from "@/components/login/AuthBrandPanel";
 
 import { USERNAME_PATTERN } from "@/lib/regex";
 
+import { setToken } from "@/lib/auth/token";
+
 const MESSAGES = {
   emptyUsername: "Ingresa tu nombre de usuario.",
   invalidUsername:
@@ -50,32 +52,37 @@ export function LoginPage() {
     setStep("password");
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
+async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+  setError(null);
 
-    if (!password) {
-      setError(MESSAGES.emptyPassword);
+  if (!password) {
+    setError(MESSAGES.emptyPassword);
+    return;
+  }
+
+  setIsSubmitting(true);
+  try {
+    const result = await loginAction(username, password);
+
+    if (!result.success) {
+      setError(result.message);
       return;
     }
 
-    setIsSubmitting(true);
-    try {
-      const result = await loginAction(username, password);
+    // Persist the JWT BEFORE navigating. RoleGuard and the API client
+    // read from localStorage — without this, the redirect fires with
+    // no session and bounces straight back here.
+    setToken(result.token);
 
-      if (!result.success) {
-        setError(result.message);
-        return;
-      }
-
-      router.replace(result.redirectTo);
-      router.refresh();
-    } catch {
-      setError(MESSAGES.systemError);
-    } finally {
-      setIsSubmitting(false);
-    }
+    router.replace(result.redirectTo);
+    router.refresh();
+  } catch {
+    setError(MESSAGES.systemError);
+  } finally {
+    setIsSubmitting(false);
   }
+}
 
   function handleChangeUsername() {
     setStep("username");
