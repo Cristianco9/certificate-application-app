@@ -1,13 +1,18 @@
-import { requireRole } from "@/lib/auth/session";
+"use client";
 
-export default async function DashboardLayout({
+import { RoleGuard } from "@/components/auth/RoleGuard";
+import { useAuthExpiration } from "@/hooks/useAuthExpiration";
+
+export default function DashboardLayout({
   children,
 }: LayoutProps<"/dashboard">) {
-  await requireRole([
-    "Máster",
-    "Administrador",
-    "Funcionario",
-    "Rector",
-  ]);
-  return <>{children}</>;
+  useAuthExpiration();
+
+  return (
+    <RoleGuard
+      allowedRoles={["Máster", "Administrador", "Funcionario", "Rector"]}
+    >
+      {children}
+    </RoleGuard>
+  );
 }
