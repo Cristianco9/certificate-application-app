@@ -1,8 +1,17 @@
-import { requireRole } from "@/lib/auth/session";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 
-export default async function AcademicRegistryLayout({
+export default function AcademicRegistryLayout({
   children,
 }: LayoutProps<"/academic-registry">) {
-  await requireRole(["Máster", "Auxiliar"]);
-  return <>{children}</>;
+  return (
+    <RoleGuard
+      allowedRoles={[
+        "Máster",
+        "Administrador",
+        "Auxiliar",
+      ]}
+    >
+      {children}
+    </RoleGuard>
+  );
 }
