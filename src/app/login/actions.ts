@@ -1,24 +1,41 @@
 "use server";
 
-import { cookies } from "next/headers";
-
-import { LANDING_BY_ROLE } from "@/permissions/roles";
-import type { BackendRole } from "@/permissions/roles";
-import type { MeResponse } from "@/types/auth";
-
-const API_URL = process.env.API_URL ?? "";
-const API_KEY = process.env.API_KEY ?? "";
-const COOKIE_NAME = process.env.COOKIE_NAME ?? "authentication";
+// `.trim()` guards against a leading/trailing space in the .env file
+// (env/.envExample currently has `API_URL= http://...`), which some
+// dotenv versions preserve and which makes `fetch` fail with an
+// unparseable URL.
+const API_URL = process.env.API_URL?.trim() ?? "";
+const API_KEY = process.env.API_KEY?.trim() ?? "";
 
 const MESSAGES = {
   invalidCredentials: "Los datos ingresados no son válidos",
+  inactiveAccount: "Esta cuenta está inactiva. Contacte al administrador.",
   systemError:
     "El sistema está experimentando problemas. Por favor, inténtelo de nuevo más tarde.",
 } as const;
 
 export type LoginActionResult =
-  | { success: true; message: string; redirectTo: string }
+  | { success: true; token: string; redirectTo: string }
   | { success: false; message: string };
+
+/**
+ * Body shape returned by the backend's login controller.
+ *
+ * Success (200):  { success: true, message, authentication: "<jwt>" }
+ * Wrong creds (401): { success: false, message, error: "INVALID_CREDENTIALS" }
+ * Inactive (403):    { success: false, message, error: "USER_INACTIVE" }
+ *
+ * Boom's error handler wraps 400 / 500 responses as:
+ *   { statusCode, error, message, code? }
+ */
+type LoginResponseBody = {
+  success?: boolean;
+  message?: string;
+  authentication?: unknown;
+  error?: string;
+  code?: string;
+  statusCode?: number;
+};
 
 export async function loginAction(
   username: string,
@@ -28,8 +45,9 @@ export async function loginAction(
     return { success: false, message: MESSAGES.systemError };
   }
 
+  let response: Response;
   try {
-    const apiResponse = await fetch(`${API_URL}/auth/login`, {
+    response = await fetch(`${API_URL}/auth/login`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -39,145 +57,73 @@ export async function loginAction(
       body: JSON.stringify({ credentials: { username, password } }),
       cache: "no-store",
     });
+  } catch {
+    // Network failure, DNS failure, malformed URL, aborted request —
+    // nothing to parse. This is a genuine system error.
+    return { success: false, message: MESSAGES.systemError };
+  }
 
-    // 401 → invalid credentials. The backend deliberately returns the same
-    // shape for "user not found" and "wrong password".
-    if (apiResponse.status === 400 || apiResponse.status === 401) {
-      return { success: false, message: MESSAGES.invalidCredentials };
-    }
+  // ─────────────────────────────────────────────────────────────
+  // TEMPORARY DIAGNOSTIC — remove once the login flow is verified.
+  // Logs what the backend actually returned, since the terminal in
+  // which `npm run dev` runs is the only place Server Action output
+  // is visible. Do not ship this to production.
+  // ─────────────────────────────────────────────────────────────
+  console.log("[loginAction] response", {
+    status: response.status,
+    contentType: response.headers.get("content-type"),
+    body: await response.clone().text(),
+  });
 
-    // Anything else non-2xx → treat as a system problem.
-    if (!apiResponse.ok) {
+  // Read the body once — success and every failure branch need it.
+  let body: LoginResponseBody | null = null;
+  try {
+    body = (await response.json()) as LoginResponseBody;
+  } catch {
+    // Non-JSON body (proxy error page, truncated response, empty 500).
+    // Leave `body` null and fall through to the status checks below.
+  }
+
+  const errorCode = body?.error;
+  const boomCode = body?.code;
+
+  // ── 200 — success ─────────────────────────────────────────────
+  if (response.status === 200) {
+    const token = body?.authentication;
+
+    if (typeof token !== "string" || token.length === 0) {
+      // The controller guarantees `authentication` on 200. If it's
+      // missing, the contract has drifted — fail loudly rather than
+      // redirecting with an undefined token.
       return { success: false, message: MESSAGES.systemError };
     }
 
-    // Forward the httpOnly `authentication` cookie issued by the API.
-    const setCookieHeaders =
-      typeof apiResponse.headers.getSetCookie === "function"
-        ? apiResponse.headers.getSetCookie()
-        : [];
-
-    if (setCookieHeaders.length > 0) {
-      const cookieStore = await cookies();
-      for (const raw of setCookieHeaders) {
-        forwardSetCookie(cookieStore, raw);
-      }
-    }
-
-    // Resolve the role so the caller knows where to land. The login
-    // response does not carry the role — the JWT is httpOnly and the
-    // backend returns only `{ success, message }`. We call /auth/me
-    // ourselves, passing the freshly-issued cookie explicitly (the Server
-    // Action's `cookies()` jar is response-only and does not feed the
-    // request store).
-    const redirectTo = await resolveLandingPath(setCookieHeaders);
-
-    return {
-      success: true,
-      message: "Sesión iniciada correctamente",
-      redirectTo: redirectTo ?? "/dashboard",
-    };
-  } catch {
-    return { success: false, message: MESSAGES.systemError };
-  }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-type CookieJar = Awaited<ReturnType<typeof cookies>>;
-
-/**
- * Reads the role from `GET /auth/me` using the token that was just issued
- * and returns the corresponding landing path.
- *
- * Returns `null` on any failure — misconfiguration, network error, an
- * unexpected payload — so the caller can fall back to `/dashboard` and let
- * the layout guard sort out the destination. Failing to log the user in
- * because we couldn't guess their landing page would be worse than landing
- * on the wrong page.
- */
-async function resolveLandingPath(
-  setCookieHeaders: string[]
-): Promise<string | null> {
-  const token = extractCookieValue(setCookieHeaders, COOKIE_NAME);
-  if (!token) return null;
-
-  try {
-    const meRes = await fetch(`${API_URL}/auth/me`, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        apikey: API_KEY,
-        Cookie: `${COOKIE_NAME}=${token}`,
-      },
-      cache: "no-store",
-    });
-
-    if (!meRes.ok) return null;
-
-    const me = (await meRes.json()) as MeResponse;
-    if (!me.success) return null;
-
-    return LANDING_BY_ROLE[me.role as BackendRole] ?? "/dashboard";
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Finds `<name>=<value>` in a `Set-Cookie` header list and returns the
- * value with all attributes stripped.
- */
-function extractCookieValue(
-  setCookieHeaders: string[],
-  name: string
-): string | null {
-  const prefix = `${name}=`;
-  const header = setCookieHeaders.find((raw) =>
-    raw.trim().toLowerCase().startsWith(prefix.toLowerCase())
-  );
-  if (!header) return null;
-
-  const value = header
-    .slice(header.indexOf("=") + 1)
-    .split(";")[0]
-    .trim();
-
-  return value || null;
-}
-
-function forwardSetCookie(jar: CookieJar, raw: string): void {
-  const [pair, ...attributes] = raw.split(";").map((part) => part.trim());
-  const separatorIndex = pair.indexOf("=");
-  if (separatorIndex === -1) return;
-
-  const name = pair.slice(0, separatorIndex).trim();
-  const value = pair.slice(separatorIndex + 1).trim();
-
-  const options: Parameters<CookieJar["set"]>[2] = { path: "/" };
-
-  for (const attribute of attributes) {
-    const [key, ...valueParts] = attribute.split("=");
-    const attrKey = key.trim().toLowerCase();
-    const attrValue = valueParts.join("=").trim();
-
-    if (attrKey === "path") options.path = attrValue || "/";
-    if (attrKey === "httponly") options.httpOnly = true;
-    if (attrKey === "secure") options.secure = true;
-    if (attrKey === "samesite") {
-      const v = attrValue.toLowerCase();
-      if (v === "lax" || v === "strict" || v === "none") options.sameSite = v;
-    }
-    if (attrKey === "max-age") {
-      const n = Number(attrValue);
-      if (!Number.isNaN(n)) options.maxAge = n;
-    }
-    if (attrKey === "expires") {
-      const d = new Date(attrValue);
-      if (!Number.isNaN(d.getTime())) options.expires = d;
-    }
+    return { success: true, token, redirectTo: "/dashboard" };
   }
 
-  options.httpOnly = true;
-  jar.set(name, value, options);
+  // ── 401 — wrong username or password ──────────────────────────
+  // The backend collapses "user not found" and "wrong password" into
+  // this single response to prevent user enumeration.
+  if (response.status === 401 || errorCode === "INVALID_CREDENTIALS") {
+    return { success: false, message: MESSAGES.invalidCredentials };
+  }
+
+  // ── 403 — correct credentials, inactive account ───────────────
+  if (response.status === 403 || errorCode === "USER_INACTIVE") {
+    return { success: false, message: MESSAGES.inactiveAccount };
+  }
+
+  // ── 400 — malformed request ───────────────────────────────────
+  // The frontend validates both fields before submitting, so a 400
+  // reaching this point can never mean "the user forgot to type a
+  // field" — that message would contradict what they just did.
+  // Whether the cause is a stale endpoint, a body-shape mismatch,
+  // or a backend that uses 400 for wrong credentials, the correct
+  // UX is the same as a failed authentication.
+  if (response.status === 400 || boomCode === "MISSING_CREDENTIALS") {
+    return { success: false, message: MESSAGES.invalidCredentials };
+  }
+
+  // ── 404 / 500 / anything else ─────────────────────────────────
+  return { success: false, message: MESSAGES.systemError };
 }
