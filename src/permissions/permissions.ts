@@ -7,7 +7,8 @@
  * boundary: the backend enforces authorization independently via
  * `checkRole([...])` on every route. A permission listed here means
  * "the UI may show this element"; it does NOT mean "the request will succeed".
- *
+ */
+
 import type { BackendRole } from './roles';
 
 // ── Permission catalog ──────────────────────────────────────────────────────
@@ -16,21 +17,21 @@ import type { BackendRole } from './roles';
  * Every capability the UI gates on.
  *
  * Note on CATALOGS_READ vs CATALOGS_READ_RESTRICTED:
- *   The backend is inconsistent — some catalogs (Departments, Municipalities,
- *   DocumentTypes, Genders, Grades, Groups, Institutions, Subjects) are
- *   readable by all five roles, while others (AcademicLevels, Countries,
- *   Phones, Roles) are restricted to admins. This split reflects that.
+ *   Some catalogs (Departments, Municipalities, DocumentTypes, Genders,
+ *   Grades, Groups, Institutions, Subjects) are readable by all five roles,
+ *   while others (AcademicLevels, Countries, Phones, Roles) are restricted
+ *   to admins. This split reflects that.
  *
  * Note on CERTIFICATES_*:
- *   The backend does not yet expose a certificate endpoint (only the model
- *   and migration exist). These permissions are placeholders so the UI can
- *   be built against a stable contract once the endpoint lands. Per §56
- *   Rule 2, do NOT build service calls against these until the contract is
- *   confirmed with Cristian.
+ *   The backend does not yet expose a certificate endpoint. These permissions
+ *   are placeholders so the UI can be built against a stable contract once
+ *   the endpoint lands. Per §56 Rule 2, do NOT build service calls against
+ *   these until the contract is confirmed.
  */
 export const PERMISSIONS = {
   // ── Navigation ──────────────────────────────────────────────────────────
   NAV_DASHBOARD: 'nav:dashboard',
+  NAV_ACADEMIC_REGISTRY: 'nav:academic-registry',
   NAV_STUDENTS: 'nav:students',
   NAV_CERTIFICATES: 'nav:certificates',
   NAV_REPOSITORY: 'nav:repository',
@@ -70,21 +71,11 @@ export const PERMISSIONS = {
   USERS_MANAGE: 'users:manage',
 
   // ── Catalogs ────────────────────────────────────────────────────────────
-  /**
-   * Read access to the shared catalogs readable by all roles:
-   * Departments, Municipalities, DocumentTypes, Genders, Grades, Groups,
-   * Institutions, Subjects.
-   */
+  /** Shared catalogs readable by all roles. */
   CATALOGS_READ: 'catalogs:read',
-  /**
-   * Read access to the restricted catalogs (admin-only):
-   * AcademicLevels, Countries, Phones, Roles.
-   */
+  /** Restricted catalogs (admin-only). */
   CATALOGS_READ_RESTRICTED: 'catalogs:read-restricted',
-  /**
-   * Create / update / delete on ANY catalog (shared or restricted).
-   * The backend grants this uniformly to Máster and Administrador.
-   */
+  /** Create / update / delete on ANY catalog. */
   CATALOGS_MANAGE: 'catalogs:manage',
 
   // ── Historical database import ──────────────────────────────────────────
@@ -99,24 +90,24 @@ export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 /**
  * Which permissions each backend role has.
  *
- * `Máster` is the super-admin: it appears in every `checkRole([...])` array
- * on the backend, so it is granted every permission. Using
- * `Object.values(PERMISSIONS)` here keeps it automatically in sync as new
- * permissions are added.
+ * `Máster` is the super-admin and is granted every permission
+ * (`Object.values(PERMISSIONS)` keeps it in sync automatically).
  *
- * All other roles are listed explicitly so the matrix stays auditable —
- * you can look at a role and see exactly what it can do.
+ * All other roles are listed explicitly so the matrix stays auditable.
+ *
+ * Navigation summary:
+ *   NAV_DASHBOARD          → Máster, Administrador, Funcionario, Rector
+ *   NAV_ACADEMIC_REGISTRY  → Máster, Administrador, Auxiliar
  */
 export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
   // ── Super-admin — full access ───────────────────────────────────────────
   'Máster': Object.values(PERMISSIONS) as readonly Permission[],
 
   // ── Administrator ───────────────────────────────────────────────────────
-  // Full administrative surface: users, catalogs, imports, students,
-  // enrollments, scores, certificates, and certificate recipients.
   'Administrador': [
     // Navigation — every item visible.
     PERMISSIONS.NAV_DASHBOARD,
+    PERMISSIONS.NAV_ACADEMIC_REGISTRY,
     PERMISSIONS.NAV_STUDENTS,
     PERMISSIONS.NAV_CERTIFICATES,
     PERMISSIONS.NAV_REPOSITORY,
@@ -164,14 +155,9 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
   ],
 
   // ── Academic Secretary (Funcionario) ────────────────────────────────────
-  // Expedites certificates, consults student history. Cannot create or
-  // delete records in most resources; cannot manage users or catalogs.
-  // Matches: every `['Máster', 'Administrador', 'Rector', 'Funcionario']`
-  // array on the certificateRecipient router, plus read-only access on
-  // students / enrollments / scores, plus student/enrollment create+update
-  // is NOT granted (that's Auxiliar only).
+  // NO NAV_ACADEMIC_REGISTRY: this role cannot access /academic-registry.
   'Funcionario': [
-    // Navigation — user-facing items only.
+    // Navigation.
     PERMISSIONS.NAV_DASHBOARD,
     PERMISSIONS.NAV_STUDENTS,
     PERMISSIONS.NAV_CERTIFICATES,
@@ -186,7 +172,7 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
     // Scores — read only.
     PERMISSIONS.SCORES_READ,
 
-    // Certificates — full lifecycle (this is the primary function).
+    // Certificates — full lifecycle (primary function).
     PERMISSIONS.CERTIFICATES_READ,
     PERMISSIONS.CERTIFICATES_GENERATE,
     PERMISSIONS.CERTIFICATES_REPRINT,
@@ -201,13 +187,11 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
   ],
 
   // ── Auxiliar ────────────────────────────────────────────────────────────
-  // Administrative assistant. Broader write access than Funcionario on
-  // students/enrollments, but not on certificates or scores.
-  // Matches: `checkRole(['Máster', 'Administrador', 'Auxiliar'])` on
-  // student/enrollment create+update.
+  // NO NAV_DASHBOARD: this role's home is the academic registry, and
+  // /dashboard is not accessible to it.
   'Auxiliar': [
-    // Navigation — user-facing items only.
-    PERMISSIONS.NAV_DASHBOARD,
+    // Navigation.
+    PERMISSIONS.NAV_ACADEMIC_REGISTRY,
     PERMISSIONS.NAV_STUDENTS,
     PERMISSIONS.NAV_CERTIFICATES,
     PERMISSIONS.NAV_REPOSITORY,
@@ -225,8 +209,7 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
     // Scores — read only.
     PERMISSIONS.SCORES_READ,
 
-    // Certificates — read only. Auxiliar is NOT in the
-    // certificateRecipient checkRole array, so no recipient permissions.
+    // Certificates — read only.
     PERMISSIONS.CERTIFICATES_READ,
 
     // Catalogs — shared reads only.
@@ -234,11 +217,9 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
   ],
 
   // ── Rector ──────────────────────────────────────────────────────────────
-  // Institutional authority. Read-mostly oversight.
-  // Matches: read on students, enrollments, scores, and certificate
-  // recipients (create+update on recipients, but NOT delete).
+  // NO NAV_ACADEMIC_REGISTRY: this role cannot access /academic-registry.
   'Rector': [
-    // Navigation — user-facing items only.
+    // Navigation.
     PERMISSIONS.NAV_DASHBOARD,
     PERMISSIONS.NAV_STUDENTS,
     PERMISSIONS.NAV_CERTIFICATES,
@@ -257,7 +238,6 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
     PERMISSIONS.CERTIFICATES_READ,
 
     // Certificate recipients — read + manage (create/update), not delete.
-    // Matches: `checkRole(['Máster', 'Administrador', 'Rector', 'Funcionario'])`.
     PERMISSIONS.CERTIFICATE_RECIPIENTS_READ,
     PERMISSIONS.CERTIFICATE_RECIPIENTS_MANAGE,
 
