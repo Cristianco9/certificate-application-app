@@ -1,11 +1,15 @@
 "use server";
 
+import { LANDING_BY_ROLE, isBackendRole } from "@/permissions/roles";
+
 // `.trim()` guards against a leading/trailing space in the .env file
 // (env/.envExample currently has `API_URL= http://...`), which some
 // dotenv versions preserve and which makes `fetch` fail with an
 // unparseable URL.
 const API_URL = process.env.API_URL?.trim() ?? "";
 const API_KEY = process.env.API_KEY?.trim() ?? "";
+
+const DEFAULT_LANDING = "/dashboard";
 
 const MESSAGES = {
   invalidCredentials: "Los datos ingresados no son válidos",
@@ -36,6 +40,35 @@ type LoginResponseBody = {
   code?: string;
   statusCode?: number;
 };
+
+/**
+ * Resolves where a freshly authenticated user should land, based on the
+ * `role` claim of the JWT. Single source of truth: LANDING_BY_ROLE.
+ *
+ * The payload is only decoded (not verified) — this is routing, not
+ * security. The backend verifies the signature on every request.
+ */
+function getLandingPath(token: string): string {
+  try {
+    const payloadSegment = token.split(".")[1];
+    const payload = JSON.parse(
+      Buffer.from(payloadSegment, "base64url").toString("utf8")
+    ) as { role?: unknown };
+
+    if (isBackendRole(payload.role)) {
+      return LANDING_BY_ROLE[payload.role];
+    }
+
+    console.warn(
+      "[loginAction] Unrecognized role in JWT, using default landing:",
+      payload.role
+    );
+  } catch {
+    console.warn("[loginAction] Could not decode JWT, using default landing.");
+  }
+
+  return DEFAULT_LANDING;
+}
 
 export async function loginAction(
   username: string,
@@ -98,7 +131,7 @@ export async function loginAction(
       return { success: false, message: MESSAGES.systemError };
     }
 
-    return { success: true, token, redirectTo: "/dashboard" };
+    return { success: true, token, redirectTo: getLandingPath(token) };
   }
 
   // ── 401 — wrong username or password ──────────────────────────
@@ -116,10 +149,7 @@ export async function loginAction(
   // ── 400 — malformed request ───────────────────────────────────
   // The frontend validates both fields before submitting, so a 400
   // reaching this point can never mean "the user forgot to type a
-  // field" — that message would contradict what they just did.
-  // Whether the cause is a stale endpoint, a body-shape mismatch,
-  // or a backend that uses 400 for wrong credentials, the correct
-  // UX is the same as a failed authentication.
+  // field". Same UX as a failed authentication.
   if (response.status === 400 || boomCode === "MISSING_CREDENTIALS") {
     return { success: false, message: MESSAGES.invalidCredentials };
   }
