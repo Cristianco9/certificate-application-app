@@ -96,18 +96,6 @@ export async function loginAction(
     return { success: false, message: MESSAGES.systemError };
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // TEMPORARY DIAGNOSTIC — remove once the login flow is verified.
-  // Logs what the backend actually returned, since the terminal in
-  // which `npm run dev` runs is the only place Server Action output
-  // is visible. Do not ship this to production.
-  // ─────────────────────────────────────────────────────────────
-  console.log("[loginAction] response", {
-    status: response.status,
-    contentType: response.headers.get("content-type"),
-    body: await response.clone().text(),
-  });
-
   // Read the body once — success and every failure branch need it.
   let body: LoginResponseBody | null = null;
   try {

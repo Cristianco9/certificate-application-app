@@ -285,7 +285,7 @@ export function UnauthorizedContent() {
   const PrimaryIcon = content.primary.icon;
 
   return (
-    <main className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-[#F0EDED] px-6 py-12">
+    <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#F0EDED] px-4 py-6 sm:px-6 sm:py-8">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 overflow-hidden"
@@ -302,7 +302,7 @@ export function UnauthorizedContent() {
         <Link
           href="/welcome"
           className="
-            mx-auto mb-8 flex w-fit items-center gap-2.5 rounded-lg
+            mx-auto mb-5 flex w-fit items-center gap-2.5 rounded-lg
             animate-in fade-in slide-in-from-top-3 fill-mode-backwards
             [animation-duration:500ms]
             focus-visible:ring-2 focus-visible:ring-[#3B5FC7]/40
@@ -328,10 +328,10 @@ export function UnauthorizedContent() {
         >
           <div
             aria-hidden="true"
-            className={`h-1.5 w-full ${content.accentClass}`}
+            className={`h-1 w-full ${content.accentClass}`}
           />
 
-          <div className="p-8">
+          <div className="p-6 sm:p-7">
             <div
               className="
                 flex justify-center
@@ -356,7 +356,7 @@ export function UnauthorizedContent() {
 
             <div
               className={`
-                mx-auto mt-5 flex h-16 w-16 items-center justify-center rounded-full
+                mx-auto mt-4 flex h-14 w-14 items-center justify-center rounded-full
                 ${content.iconBg}
                 animate-in zoom-in-50 fill-mode-backwards
                 [animation-duration:600ms] [animation-delay:220ms]
@@ -364,13 +364,13 @@ export function UnauthorizedContent() {
             >
               <Icon
                 aria-hidden="true"
-                className={`h-8 w-8 ${content.iconColor}`}
+                className={`h-7 w-7 ${content.iconColor}`}
               />
             </div>
 
             <h1
               className="
-                mt-6 text-center text-2xl font-extrabold tracking-tight text-[#1F2937] sm:text-3xl
+                mt-4 text-center text-xl font-extrabold tracking-tight text-[#1F2937] sm:text-2xl
                 animate-in fade-in slide-in-from-bottom-3 fill-mode-backwards
                 [animation-duration:600ms] [animation-delay:320ms]
               "
@@ -380,7 +380,7 @@ export function UnauthorizedContent() {
 
             <p
               className="
-                mt-3 text-center text-sm leading-relaxed text-gray-500
+                mt-2.5 text-center text-sm leading-relaxed text-gray-500
                 animate-in fade-in slide-in-from-bottom-3 fill-mode-backwards
                 [animation-duration:600ms] [animation-delay:420ms]
               "
@@ -391,7 +391,7 @@ export function UnauthorizedContent() {
             {content.hint && (
               <p
                 className="
-                  mt-4 rounded-lg bg-gray-50 px-4 py-3 text-center text-xs leading-relaxed text-gray-500
+                  mt-3 rounded-lg bg-gray-50 px-3.5 py-2.5 text-center text-xs leading-relaxed text-gray-500
                   animate-in fade-in slide-in-from-bottom-3 fill-mode-backwards
                   [animation-duration:600ms] [animation-delay:480ms]
                 "
@@ -402,7 +402,7 @@ export function UnauthorizedContent() {
 
             <div
               className="
-                mt-8 space-y-3
+                mt-6 space-y-2.5
                 animate-in fade-in slide-in-from-bottom-3 fill-mode-backwards
                 [animation-duration:600ms] [animation-delay:560ms]
               "
@@ -411,7 +411,7 @@ export function UnauthorizedContent() {
                 href={content.primary.href}
                 onClick={() => endSessionIfLoggingIn(content.primary.href)}
                 className="
-                  inline-flex h-11 w-full items-center justify-center gap-2
+                  inline-flex h-10 w-full items-center justify-center gap-2
                   rounded-md bg-[#3B5FC7] text-sm font-bold text-white
                   shadow-sm transition
                   hover:bg-[#3250a8]
@@ -431,7 +431,7 @@ export function UnauthorizedContent() {
                     endSessionIfLoggingIn(content.secondary!.href)
                   }
                   className="
-                    inline-flex h-11 w-full items-center justify-center
+                    inline-flex h-10 w-full items-center justify-center
                     rounded-md border border-gray-200 bg-white
                     text-sm font-semibold text-[#1F2937]
                     transition
@@ -450,7 +450,7 @@ export function UnauthorizedContent() {
 
         <p
           className="
-            mt-6 text-center text-xs text-gray-400
+            mt-4 text-center text-xs text-gray-400
             animate-in fade-in fill-mode-backwards
             [animation-duration:600ms] [animation-delay:700ms]
           "
