@@ -19,7 +19,32 @@ import {
   type SessionFailureReason,
   type SessionState,
 } from "@/lib/auth/session";
+import { removeToken } from "@/lib/auth/token";
 import { BACKEND_ROLE_LABELS } from "@/permissions/roles";
+
+// ── Session termination ─────────────────────────────────────────────────────
+
+const LOGIN_PATH = "/login";
+
+/**
+ * Any action that sends the user to the login screen ends the current
+ * session first, so no stale JWT survives a "log in again" or "log in with
+ * another account" click.
+ *
+ * This is keyed on the destination rather than on the failure state, so
+ * every present and future unauthorized scenario that links to /login is
+ * covered automatically. Actions to other destinations (e.g. "Volver al
+ * inicio") keep the session untouched.
+ *
+ * TODO: when the QueryClientProvider is added, also call
+ * `queryClient.clear()` here so cached server data from the previous
+ * user is never shown to the next one.
+ */
+function endSessionIfLoggingIn(href: string): void {
+  if (href === LOGIN_PATH) {
+    removeToken();
+  }
+}
 
 // ── Content model ───────────────────────────────────────────────────────────
 
@@ -384,6 +409,7 @@ export function UnauthorizedContent() {
             >
               <Link
                 href={content.primary.href}
+                onClick={() => endSessionIfLoggingIn(content.primary.href)}
                 className="
                   inline-flex h-11 w-full items-center justify-center gap-2
                   rounded-md bg-[#3B5FC7] text-sm font-bold text-white
@@ -401,6 +427,9 @@ export function UnauthorizedContent() {
               {content.secondary && (
                 <Link
                   href={content.secondary.href}
+                  onClick={() =>
+                    endSessionIfLoggingIn(content.secondary!.href)
+                  }
                   className="
                     inline-flex h-11 w-full items-center justify-center
                     rounded-md border border-gray-200 bg-white
