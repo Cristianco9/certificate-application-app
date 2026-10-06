@@ -1,5 +1,7 @@
 "use server";
 
+import type { EnrollmentEntry } from "@/types/certificate-search";
+
 const API_URL = process.env.API_URL?.trim() ?? "";
 const API_KEY = process.env.API_KEY?.trim() ?? "";
 
@@ -67,15 +69,9 @@ export async function fetchGradesAction(token: string): Promise<GradeOption[]> {
 
 // ── Student search ──────────────────────────────────────────────────────────
 // Types returned by POST /students/search. The backend returns the standard
-// formatted student plus a `lastEnrollment` object, or `null` when the
-// student has no enrollments yet.
-
-export type StudentLastEnrollment = {
-  year: number;
-  shift: "DIURNA" | "NOCTURNA" | null;
-  group: { id: number; name: string } | null;
-  grade: { id: number; name: string } | null;
-};
+// formatted student plus an `enrollments` array — one entry per grade/year
+// the student has been enrolled in. Students with no enrollments come back
+// with `enrollments: []`.
 
 export type StudentSearchResponseItem = {
   id: number;
@@ -84,7 +80,7 @@ export type StudentSearchResponseItem = {
   firstLastName: string;
   secondLastName: string | null;
   documentNumber: string | null;
-  lastEnrollment: StudentLastEnrollment | null;
+  enrollments: EnrollmentEntry[];
 };
 
 export type StudentSearchResponse = {
@@ -135,6 +131,14 @@ export async function searchStudentsAction(
 
     const body = (await res.json()) as StudentSearchResponse;
     if (!Array.isArray(body.students)) return empty;
+
+    // Defensive normalization: guarantee `enrollments` is always an
+    // array, so the table never has to guard against `undefined`
+    // (e.g. if a student slipped through without the field).
+    body.students = body.students.map((s) => ({
+      ...s,
+      enrollments: Array.isArray(s.enrollments) ? s.enrollments : [],
+    }));
 
     return body;
   } catch {
