@@ -16,7 +16,7 @@ export type StudentSearchParams = {
   lastAcademicYear?: number;
   grade?: string;
   group?: string;
-  birthplace?: string;
+  birthDate?: string;
   page?: number;
   pageSize?: number;
 };
