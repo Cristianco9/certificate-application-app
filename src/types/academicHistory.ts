@@ -35,10 +35,10 @@ export type GradeName =
   | 'Undécimo';
 
 /** Group shift ENUM. */
-export type Shift = 'DIURNA' | 'NOCTURNA';
+export type Shift = 'Diurna' | 'Nocturna';
 
 /** Group status ENUM. */
-export type GroupStatus = 'ACTIVO' | 'INACTIVO';
+export type GroupStatus = 'Activo' | 'Inactivo';
 
 /** Score type ENUM. */
 export type ScoreType = 'NUMERICA' | 'ALFABETICA';

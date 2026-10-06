@@ -36,7 +36,7 @@ export type AcademicLevelAbbreviation =
   | 'Ph.D';
 
 /** User status ENUM. */
-export type UserStatus = 'ACTIVO' | 'INACTIVO';
+export type UserStatus = 'Activo' | 'Inactivo';
 
 // ── Catalog entities ────────────────────────────────────────────────────────
 

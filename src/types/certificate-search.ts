@@ -1,17 +1,6 @@
-export type Shift = "DIURNA" | "NOCTURNA";
+export type Shift = "Diurna" | "Nocturna";
 
-export type CertificateSearchResult = {
-  id: number;
-  firstName: string;
-  middleName: string | null;
-  firstLastName: string;
-  secondLastName: string | null;
-  documentNumber: string | null;
-  graduationYear: number | null;
-  grade: string | null;
-  group: string | null;
-  shift: Shift | null;
-};
+// ── Filters ─────────────────────────────────────────────────────────────────
 
 export type CertificateSearchFilters = {
   // Required
@@ -22,10 +11,11 @@ export type CertificateSearchFilters = {
   secondLastName: string;
   documentNumber: string;
   documentTypeId: string | null;
-  lastAcademicYear: string;   // "1900".."2026"
+  lastAcademicYear: string;   // "1900".."2099"
   gradeId: string | null;     // numeric id from /grades/list-all
   group: string | null;       // "1".."10"
-  birthplace: string;         // free text
+  /** Exact match on the student's birth date (`YYYY-MM-DD`). */
+  birthDate: string;
   jornada: Shift | null;
 };
 
@@ -39,7 +29,7 @@ export const EMPTY_CERTIFICATE_FILTERS: CertificateSearchFilters = {
   lastAcademicYear: "",
   gradeId: null,
   group: null,
-  birthplace: "",
+  birthDate: "",
   jornada: null,
 };
 
@@ -73,4 +63,79 @@ export function toSearchRequest(
   }
 
   return request;
+}
+
+// ── Search result (student + enrollments) ───────────────────────────────────
+
+/**
+ * One enrollment of a student, as returned by POST /students/search.
+ * `enrollmentId` and `enrollmentDate` are present when the backend
+ * returns them; the rest is what the results table actually displays.
+ */
+export type EnrollmentEntry = {
+  enrollmentId: number | null;
+  enrollmentDate: string | null;
+  year: number | null;
+  shift: Shift | null;
+  group: { id: number; name: string } | null;
+  grade: { id: number; name: string } | null;
+};
+
+/**
+ * Student with ALL of their enrollments — the shape the backend's
+ * /students/search endpoint returns per item. See `actions.ts`.
+ */
+export type CertificateSearchStudent = {
+  id: number;
+  firstName: string;
+  middleName: string | null;
+  firstLastName: string;
+  secondLastName: string | null;
+  documentNumber: string | null;
+  enrollments: EnrollmentEntry[];
+};
+
+/**
+ * A single row in the results table.
+ *
+ * One student with N enrollments yields N rows. A student with no
+ * enrollments yields exactly one row with `enrollment: null` so they
+ * still appear in the results.
+ */
+export type CertificateSearchRow = {
+  /** Stable React key — unique across the whole result set. */
+  key: string;
+  student: CertificateSearchStudent;
+  /** `null` when the student has no enrollments on record. */
+  enrollment: EnrollmentEntry | null;
+};
+
+/**
+ * Flattens a list of students-with-enrollments into table rows.
+ *
+ * The row order is preserved: enrollments already arrive newest-first
+ * from the backend (see StudentServices.searchStudents).
+ */
+export function toSearchRows(
+  students: CertificateSearchStudent[]
+): CertificateSearchRow[] {
+  const rows: CertificateSearchRow[] = [];
+
+  for (const student of students) {
+    if (student.enrollments.length === 0) {
+      rows.push({ key: `student-${student.id}`, student, enrollment: null });
+      continue;
+    }
+
+    for (const enrollment of student.enrollments) {
+      const suffix = enrollment.enrollmentId ?? "none";
+      rows.push({
+        key: `student-${student.id}-enrollment-${suffix}`,
+        student,
+        enrollment,
+      });
+    }
+  }
+
+  return rows;
 }
