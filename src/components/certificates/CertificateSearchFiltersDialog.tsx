@@ -13,6 +13,7 @@ import {
 import { getToken } from "@/lib/auth/token";
 import { DOCUMENT_NUMBER_PATTERN } from "@/lib/regex/identity";
 import {
+  STUDENT_BIRTH_DATE_PATTERN,
   STUDENT_FIRST_LAST_NAME_PATTERN,
   STUDENT_FIRST_NAME_PATTERN,
   STUDENT_MIDDLE_NAME_PATTERN,
@@ -45,8 +46,8 @@ const GROUP_OPTIONS = Array.from({ length: 10 }, (_, i) => ({
 }));
 
 const JORNADA_OPTIONS: Array<{ value: Shift; label: string }> = [
-  { value: "DIURNA", label: "Diurna" },
-  { value: "NOCTURNA", label: "Nocturna" },
+  { value: "Diurna", label: "Diurna" },
+  { value: "Nocturna", label: "Nocturna" },
 ];
 
 // ── Validation ──────────────────────────────────────────────────────────────
@@ -79,8 +80,12 @@ function validate(f: CertificateSearchFilters): FieldErrors {
     e.documentNumber =
       "Cédula (6 a 10 dígitos) o documento alfanumérico (6 a 20 caracteres).";
 
-  // NOTE: birthplace is intentionally NOT validated — the backend
-  // exposes no birthplace regex. See @/lib/regex/student.
+  // birthDate: HTML input[type="date"] always emits `YYYY-MM-DD` or "".
+  // We still defensively re-check the shape before sending it, so the
+  // backend's Joi regex can never reject a value we produced.
+  const birthDate = f.birthDate.trim();
+  if (birthDate && !STUDENT_BIRTH_DATE_PATTERN.test(birthDate))
+    e.birthDate = "Usa una fecha válida (AAAA-MM-DD).";
 
   return e;
 }
@@ -178,7 +183,7 @@ export function CertificateSearchFiltersDialog({
       secondName: draft.secondName.trim(),
       secondLastName: draft.secondLastName.trim(),
       documentNumber: draft.documentNumber.trim(),
-      birthplace: draft.birthplace.trim(),
+      birthDate: draft.birthDate.trim(),
     });
   }
 
@@ -307,7 +312,7 @@ export function CertificateSearchFiltersDialog({
               />
             </div>
 
-            {/* Row 3 — grade, group, birthplace */}
+            {/* Row 3 — grade, group, birth date */}
             <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <SelectField
                 id="gradeId"
@@ -327,14 +332,18 @@ export function CertificateSearchFiltersDialog({
                 placeholder="Todos"
               />
               <TextField
-                id="birthplace"
-                label="Lugar de nacimiento"
-                value={draft.birthplace}
-                onChange={(v) => update("birthplace", v)}
+                id="birthDate"
+                label="Fecha de nacimiento"
+                type="date"
+                min="1900-01-01"
+                max="2099-12-31"
+                value={draft.birthDate}
+                error={errors.birthDate}
+                onChange={(v) => update("birthDate", v)}
               />
             </div>
 
-            {/* Row 4 — jornada (not in the mockup, added on request) */}
+            {/* Row 4 — jornada */}
             <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <SelectField
                 id="jornada"
@@ -396,6 +405,9 @@ function TextField({
   onChange,
   error,
   required,
+  type = "text",
+  min,
+  max,
 }: {
   id: string;
   label: string;
@@ -403,6 +415,12 @@ function TextField({
   onChange: (v: string) => void;
   error?: string;
   required?: boolean;
+  /** HTML input type — `"date"` triggers the native date picker. */
+  type?: "text" | "date";
+  /** Only meaningful when `type="date"`. */
+  min?: string;
+  /** Only meaningful when `type="date"`. */
+  max?: string;
 }) {
   return (
     <div className="space-y-1.5">
@@ -413,7 +431,9 @@ function TextField({
       <input
         id={id}
         name={id}
-        type="text"
+        type={type}
+        min={type === "date" ? min : undefined}
+        max={type === "date" ? max : undefined}
         value={value}
         spellCheck={false}
         autoComplete="off"
@@ -423,6 +443,7 @@ function TextField({
         className={`
           h-10 w-full rounded-md border bg-white px-3 text-sm text-[#1F2937]
           transition outline-none placeholder:text-gray-400 focus:ring-4
+          ${type === "date" ? "text-gray-700" : ""}
           ${
             error
               ? "border-[#E5484D] focus:border-[#E5484D] focus:ring-[#E5484D]/15"

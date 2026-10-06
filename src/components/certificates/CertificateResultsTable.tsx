@@ -2,10 +2,13 @@
 
 import { Inbox, Search, UserRound } from "lucide-react";
 
-import type { CertificateSearchResult } from "@/types/certificate-search";
+import type {
+  CertificateSearchRow,
+  CertificateSearchStudent,
+} from "@/types/certificate-search";
 
 type CertificateResultsTableProps = {
-  results: CertificateSearchResult[];
+  rows: CertificateSearchRow[];
   isLoading: boolean;
   /** `false` until the user runs the first search. */
   hasSearched: boolean;
@@ -13,22 +16,26 @@ type CertificateResultsTableProps = {
   onClearFilters: () => void;
   /** Opens the filters dialog when the user has no results yet. */
   onOpenFilters: () => void;
-  /** Fires when the user clicks a row to generate a certificate for it. */
-  onSelectResult: (result: CertificateSearchResult) => void;
+  /** Fires when the user clicks a row (student + one enrollment). */
+  onSelectRow: (row: CertificateSearchRow) => void;
 };
 
 const PLACEHOLDER_ROW_COUNT = 8;
 const SKELETON_ROW_COUNT = 5;
 
 export function CertificateResultsTable({
-  results,
+  rows,
   isLoading,
   hasSearched,
   onClearFilters,
   onOpenFilters,
-  onSelectResult,
+  onSelectRow,
 }: CertificateResultsTableProps) {
-  const isEmpty = hasSearched && !isLoading && results.length === 0;
+  const isEmpty = hasSearched && !isLoading && rows.length === 0;
+
+  // The count shown to the user is the number of students, not the
+  // number of rows — a student with 4 enrollments is 1 match, not 4.
+  const studentCount = new Set(rows.map((r) => r.student.id)).size;
 
   return (
     <div className="overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-[0_20px_50px_-30px_rgba(40,97,196,0.25)]">
@@ -46,10 +53,10 @@ export function CertificateResultsTable({
               Buscando…
             </span>
           )}
-          {!isLoading && hasSearched && results.length > 0 && (
+          {!isLoading && hasSearched && studentCount > 0 && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-[#EAF1FC] px-3 py-1 text-xs font-semibold text-[#2861C4]">
-              {results.length}{" "}
-              {results.length === 1 ? "coincidencia" : "coincidencias"}
+              {studentCount}{" "}
+              {studentCount === 1 ? "estudiante" : "estudiantes"}
             </span>
           )}
         </div>
@@ -71,7 +78,7 @@ export function CertificateResultsTable({
                 colSpan={4}
                 className="w-[47%] border-b-0 border-l border-gray-200 text-center"
               >
-                Último grado cursado
+                Matrículas
               </Th>
             </tr>
 
@@ -93,14 +100,23 @@ export function CertificateResultsTable({
                 onClearFilters={onClearFilters}
                 onOpenFilters={onOpenFilters}
               />
-            ) : results.length > 0 ? (
-              results.map((result) => (
-                <ResultRow
-                  key={result.id}
-                  result={result}
-                  onSelect={onSelectResult}
-                />
-              ))
+            ) : rows.length > 0 ? (
+              rows.map((row, index) => {
+                const previous = index > 0 ? rows[index - 1] : null;
+                // A stronger top border visually groups the enrollments
+                // that belong to the same student.
+                const startsNewStudent =
+                  !previous || previous.student.id !== row.student.id;
+
+                return (
+                  <ResultRow
+                    key={row.key}
+                    row={row}
+                    startsNewStudent={startsNewStudent}
+                    onSelect={onSelectRow}
+                  />
+                );
+              })
             ) : (
               <PlaceholderRows />
             )}
@@ -143,23 +159,23 @@ function Th({
 }
 
 function ResultRow({
-  result,
+  row,
+  startsNewStudent,
   onSelect,
 }: {
-  result: CertificateSearchResult;
-  onSelect: (result: CertificateSearchResult) => void;
+  row: CertificateSearchRow;
+  startsNewStudent: boolean;
+  onSelect: (row: CertificateSearchRow) => void;
 }) {
-  const fullName = getFullName(result);
-  const initials = getInitials(result);
+  const { student, enrollment } = row;
+  const fullName = getFullName(student);
+  const initials = getInitials(student);
 
   function handleSelect() {
-    onSelect(result);
+    onSelect(row);
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTableRowElement>) {
-    // Enter and Space are the standard activation keys for a
-    // keyboard-focusable element. Space needs preventDefault so the
-    // page doesn't also scroll.
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       handleSelect();
@@ -171,14 +187,16 @@ function ResultRow({
       tabIndex={0}
       onClick={handleSelect}
       onKeyDown={handleKeyDown}
-      aria-label={`Generar certificado para ${fullName}`}
-      className="
+      aria-label={`Generar certificado para ${fullName}${enrollment?.grade?.name ? ` — ${enrollment.grade.name}` : ""
+        }`}
+      className={`
         group cursor-pointer border-b border-gray-100 transition-colors
         last:border-b-0
         hover:bg-[#EAF1FC]
         focus-visible:bg-[#EAF1FC] focus-visible:outline-none
         focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#3B5FC7]/40
-      "
+        ${startsNewStudent ? "border-t-2 border-t-gray-200/70" : ""}
+      `}
     >
       {/* Name + avatar */}
       <td className="px-4 py-3.5">
@@ -205,15 +223,15 @@ function ResultRow({
       {/* Document */}
       <td className="px-4 py-3.5">
         <span className="font-mono text-sm tabular-nums text-gray-600">
-          {result.documentNumber ?? "—"}
+          {student.documentNumber ?? "—"}
         </span>
       </td>
 
       {/* Año */}
       <td className="border-l border-gray-100 px-4 py-3.5">
-        {result.graduationYear ? (
+        {enrollment?.year ? (
           <span className="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-bold text-gray-700 tabular-nums transition-colors group-hover:bg-white group-focus-visible:bg-white">
-            {result.graduationYear}
+            {enrollment.year}
           </span>
         ) : (
           <span className="text-sm text-gray-400">—</span>
@@ -222,9 +240,9 @@ function ResultRow({
 
       {/* Grado */}
       <td className="px-4 py-3.5">
-        {result.grade ? (
+        {enrollment?.grade?.name ? (
           <span className="text-sm font-semibold text-[#1F2937]">
-            {result.grade}
+            {enrollment.grade.name}
           </span>
         ) : (
           <span className="text-sm text-gray-400">—</span>
@@ -233,38 +251,40 @@ function ResultRow({
 
       {/* Grupo */}
       <td className="px-4 py-3.5">
-        {result.group ? (
-          <span className="text-sm text-gray-600">{result.group}</span>
-        ) : (
-          <span className="text-sm text-gray-400">—</span>
-        )}
-      </td>
-
-      {/* Jornada — pill */}
-      <td className="px-4 py-3.5">
-        {result.shift ? (
-          <span
-            className={`
-              inline-flex items-center rounded px-2 py-0.5
-              text-[10px] font-bold tracking-wide uppercase
-              ${
-                result.shift === "DIURNA"
-                  ? "bg-[#EAF1FC] text-[#2861C4] group-hover:bg-white group-focus-visible:bg-white"
-                  : "bg-[#EDE9FE] text-[#6328C4] group-hover:bg-white group-focus-visible:bg-white"
-              }
-            `}
-          >
-            {result.shift === "DIURNA" ? "Diurna" : "Nocturna"}
+        {enrollment?.group?.name ? (
+          <span className="text-sm text-gray-600">
+            {enrollment.group.name}
           </span>
         ) : (
           <span className="text-sm text-gray-400">—</span>
         )}
       </td>
+
+      {/* Jornada */}
+      <td className="px-4 py-3.5">
+        {enrollment?.shift ? (
+          <span
+            className={`
+        inline-flex items-center rounded px-2 py-0.5
+        text-[10px] font-bold tracking-wide uppercase
+        ${enrollment.shift.toLowerCase() === "diurna"
+                ? "bg-[#EAF1FC] text-[#2861C4] group-hover:bg-white group-focus-visible:bg-white"
+                : "bg-[#EDE9FE] text-[#6328C4] group-hover:bg-white group-focus-visible:bg-white"
+              }
+      `}
+          >
+            {enrollment.shift}
+          </span>
+        ) : (
+          <span className="text-sm text-gray-400">—</span>
+        )}
+      </td>
+
     </tr>
   );
 }
 
-/** Default state before any search — hints at the table's shape. */
+/** Default state before any search. */
 function PlaceholderRows() {
   return (
     <>
@@ -274,30 +294,24 @@ function PlaceholderRows() {
           className="border-b border-gray-100/80 last:border-b-0"
           aria-hidden="true"
         >
-          {/* Name */}
           <td className="px-4 py-3.5">
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 shrink-0 rounded-full bg-gray-100/70" />
               <div className="h-3 w-40 rounded-full bg-gray-100/70" />
             </div>
           </td>
-          {/* Document */}
           <td className="px-4 py-3.5">
             <div className="h-3 w-20 rounded-full bg-gray-100/70" />
           </td>
-          {/* Año */}
           <td className="border-l border-gray-100 px-4 py-3.5">
             <div className="h-4 w-10 rounded-md bg-gray-100/70" />
           </td>
-          {/* Grado */}
           <td className="px-4 py-3.5">
             <div className="h-3 w-16 rounded-full bg-gray-100/70" />
           </td>
-          {/* Grupo */}
           <td className="px-4 py-3.5">
             <div className="h-3 w-12 rounded-full bg-gray-100/70" />
           </td>
-          {/* Jornada */}
           <td className="px-4 py-3.5">
             <div className="h-4 w-14 rounded bg-gray-100/70" />
           </td>
@@ -317,30 +331,24 @@ function SkeletonRows() {
           className="border-b border-gray-100/80 last:border-b-0"
           aria-hidden="true"
         >
-          {/* Name */}
           <td className="px-4 py-3.5">
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 shrink-0 animate-pulse rounded-full bg-gray-100" />
               <div className="h-3 w-40 animate-pulse rounded-full bg-gray-100" />
             </div>
           </td>
-          {/* Document */}
           <td className="px-4 py-3.5">
             <div className="h-3 w-20 animate-pulse rounded-full bg-gray-100" />
           </td>
-          {/* Año */}
           <td className="border-l border-gray-100 px-4 py-3.5">
             <div className="h-4 w-10 animate-pulse rounded-md bg-gray-100" />
           </td>
-          {/* Grado */}
           <td className="px-4 py-3.5">
             <div className="h-3 w-16 animate-pulse rounded-full bg-gray-100" />
           </td>
-          {/* Grupo */}
           <td className="px-4 py-3.5">
             <div className="h-3 w-12 animate-pulse rounded-full bg-gray-100" />
           </td>
-          {/* Jornada */}
           <td className="px-4 py-3.5">
             <div className="h-4 w-14 animate-pulse rounded bg-gray-100" />
           </td>
@@ -416,19 +424,19 @@ function EmptyRow({
 /* Helpers                                                            */
 /* ────────────────────────────────────────────────────────────────── */
 
-function getFullName(result: CertificateSearchResult): string {
+function getFullName(student: CertificateSearchStudent): string {
   return [
-    result.firstName,
-    result.middleName,
-    result.firstLastName,
-    result.secondLastName,
+    student.firstName,
+    student.middleName,
+    student.firstLastName,
+    student.secondLastName,
   ]
     .filter(Boolean)
     .join(" ");
 }
 
-function getInitials(result: CertificateSearchResult): string {
-  const first = result.firstName.charAt(0);
-  const last = result.firstLastName.charAt(0);
+function getInitials(student: CertificateSearchStudent): string {
+  const first = student.firstName.charAt(0);
+  const last = student.firstLastName.charAt(0);
   return `${first}${last}`.toUpperCase();
 }
