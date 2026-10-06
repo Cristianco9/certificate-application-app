@@ -23,8 +23,14 @@ export const STUDENT_FIRST_LAST_NAME_PATTERN = /^[\p{L}]{3,50}$/u;
 export const STUDENT_SECOND_LAST_NAME_PATTERN = /^([\p{L}]{3,50})?$/u;
 
 /**
- * Birthplace as a municipality name — letters and spaces, 3–50 chars.
- * Mirrors the backend's `municipalityName` pattern, since "lugar de
- * nacimiento" resolves to a municipality on the backend.
+ * Student birth date — ISO 8601 `YYYY-MM-DD`, year restricted to
+ * 1900–2099, month to 01–12, day to 01–31.
+ *
+ * Mirrors the backend's `studentBirthDate` RegEx. Like the backend
+ * pattern, a RegEx alone cannot verify real calendar validity
+ * (e.g. it accepts `2023-02-31`); the HTML `input[type="date"]` used
+ * in the filter dialog only ever produces valid dates, so this is a
+ * defensive format check, not the primary guarantee.
  */
-export const STUDENT_BIRTHPLACE_PATTERN = /^[\p{L} ]{3,50}$/u;
+export const STUDENT_BIRTH_DATE_PATTERN =
+  /^(19\d{2}|20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
