@@ -20,7 +20,11 @@ import {
   type SessionState,
 } from "@/lib/auth/session";
 import { removeToken } from "@/lib/auth/token";
-import { BACKEND_ROLE_LABELS } from "@/permissions/roles";
+import {
+  BACKEND_ROLE_LABELS,
+  LANDING_BY_ROLE,
+  type BackendRole,
+} from "@/permissions/roles";
 
 // ── Session termination ─────────────────────────────────────────────────────
 
@@ -195,7 +199,23 @@ const FAILURE_CONTENT: Record<SessionFailureReason, Content> = {
 
 // ── Content builders ────────────────────────────────────────────────────────
 
-function forbiddenContent(roleLabel: string): Content {
+/**
+ * Role-denial copy, used when an authenticated user reaches a route their
+ * role is not allowed to see (e.g. `Auxiliar` visiting `/certificates`).
+ *
+ * The "primary action" points at the user's own landing page — the one
+ * `LANDING_BY_ROLE` assigns them after login — rather than the public
+ * `/welcome` screen. An authenticated user who mistypes a URL into a
+ * forbidden area should be sent back to their own dashboard, not ejected
+ * to the marketing page.
+ *
+ *   Auxiliar        → /academic-registry
+ *   everyone else   → /dashboard
+ */
+function forbiddenContent(role: BackendRole): Content {
+  const roleLabel = BACKEND_ROLE_LABELS[role];
+  const homePath = LANDING_BY_ROLE[role];
+
   return {
     badge: `Rol: ${roleLabel}`,
     badgeClass: "bg-[#FEF1F1] text-[#991B1B]",
@@ -215,7 +235,7 @@ function forbiddenContent(roleLabel: string): Content {
 
     primary: {
       label: "Volver al inicio",
-      href: "/welcome",
+      href: homePath,
       icon: ArrowLeft,
     },
     secondary: {
@@ -257,7 +277,7 @@ function resolveContent(
   session: SessionState
 ): Content {
   if (session.status === "authenticated") {
-    return forbiddenContent(BACKEND_ROLE_LABELS[session.user.role]);
+    return forbiddenContent(session.user.role);
   }
 
   const reason = isSessionFailureReason(reasonParam)
