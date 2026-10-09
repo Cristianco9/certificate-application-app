@@ -186,14 +186,18 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
     PERMISSIONS.CATALOGS_READ,
   ],
 
-  // ── Auxiliar ────────────────────────────────────────────────────────────
+// ── Auxiliar ────────────────────────────────────────────────────────────
   // NO NAV_DASHBOARD: this role's home is the academic registry, and
   // /dashboard is not accessible to it.
+  //
+  // NO NAV_CERTIFICATES / CERTIFICATES_READ: certificate generation
+  // (both the search page and the nested student-profile page) is
+  // reserved for Máster, Administrador, Funcionario and Rector. The
+  // matching RoleGuard lives in `src/app/certificates/layout.tsx`.
   'Auxiliar': [
     // Navigation.
     PERMISSIONS.NAV_ACADEMIC_REGISTRY,
     PERMISSIONS.NAV_STUDENTS,
-    PERMISSIONS.NAV_CERTIFICATES,
     PERMISSIONS.NAV_REPOSITORY,
 
     // Students — read + create + update (not delete).
@@ -208,9 +212,6 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
 
     // Scores — read only.
     PERMISSIONS.SCORES_READ,
-
-    // Certificates — read only.
-    PERMISSIONS.CERTIFICATES_READ,
 
     // Catalogs — shared reads only.
     PERMISSIONS.CATALOGS_READ,
