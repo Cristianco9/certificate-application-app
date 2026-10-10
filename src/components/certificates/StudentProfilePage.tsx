@@ -95,10 +95,8 @@ export function StudentProfilePage() {
         </Link>
 
         <div>
-          <button
-            type="button"
-            disabled
-            title="Esta función estará disponible próximamente"
+          <Link
+            href="/certificates/generate"
             className="
               inline-flex items-center gap-2 rounded-full
               bg-[#3B5FC7] px-6 py-2.5 text-sm font-bold text-white
@@ -107,12 +105,10 @@ export function StudentProfilePage() {
               focus-visible:ring-4 focus-visible:ring-[#3B5FC7]/30
               focus-visible:outline-none
               active:translate-y-px
-              disabled:cursor-not-allowed disabled:opacity-60
-              disabled:hover:bg-[#3B5FC7]
             "
           >
             Generar certificado
-          </button>
+          </Link>
         </div>
 
         {state.kind === "loading" && <LoadingState />}

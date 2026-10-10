@@ -337,3 +337,55 @@ export async function fetchStudentProfileAction(
     certificateCount: null,
   };
 }
+
+// ── Academic history (for the certificate-generation view) ─────────────────
+//
+// Backing endpoint: POST /students/get-academic-history
+// Returns a flat list of score rows; each row carries its own enrollment
+// id plus the year / grade / group / subject it belongs to. The UI groups
+// these by enrollmentId to build the enrollment selector and the per-
+// enrollment scores table.
+
+export type AcademicHistoryRow = {
+  year: number | null;
+  grade: { id: number; name: string } | null;
+  group: { id: number; name: string } | null;
+  subject: { id: number; name: string; hourlyIntensity: number } | null;
+  originalScore: string;
+  scoreType: "NUMERICA" | "ALFABETICA";
+  remedialScore: string;
+  enrollmentId: number | null;
+};
+
+type AcademicHistoryApiBody = {
+  history?: AcademicHistoryRow[];
+};
+
+export async function fetchStudentAcademicHistoryAction(
+  token: string,
+  studentId: string
+): Promise<AcademicHistoryRow[]> {
+  if (!API_URL || !API_KEY || !token || !studentId) return [];
+
+  try {
+    const res = await fetch(`${API_URL}/students/get-academic-history`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        apikey: API_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ studentId }),
+      cache: "no-store",
+    });
+
+    if (!res.ok) return [];
+
+    const body = (await res.json()) as AcademicHistoryApiBody;
+    if (!Array.isArray(body.history)) return [];
+    return body.history;
+  } catch {
+    return [];
+  }
+}
