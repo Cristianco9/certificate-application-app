@@ -2,7 +2,7 @@ export type UserRole =
   | "Máster"
   | "Auxiliar"
   | "Administrador"
-  | "Funcionario"
+  | "Secretario"
   | "Rector";
 
 export type AuthenticatedUser = {
