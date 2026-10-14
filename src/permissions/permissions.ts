@@ -96,7 +96,7 @@ export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
  * All other roles are listed explicitly so the matrix stays auditable.
  *
  * Navigation summary:
- *   NAV_DASHBOARD          → Máster, Administrador, Funcionario, Rector
+ *   NAV_DASHBOARD          → Máster, Administrador, Secretario, Rector
  *   NAV_ACADEMIC_REGISTRY  → Máster, Administrador, Auxiliar
  */
 export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
@@ -154,9 +154,9 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
     PERMISSIONS.DATABASE_IMPORT,
   ],
 
-  // ── Academic Secretary (Funcionario) ────────────────────────────────────
+  // ── Academic Secretary (Secretario) ────────────────────────────────────
   // NO NAV_ACADEMIC_REGISTRY: this role cannot access /academic-registry.
-  'Funcionario': [
+  'Secretario': [
     // Navigation.
     PERMISSIONS.NAV_DASHBOARD,
     PERMISSIONS.NAV_STUDENTS,
@@ -192,7 +192,7 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
   //
   // NO NAV_CERTIFICATES / CERTIFICATES_READ: certificate generation
   // (both the search page and the nested student-profile page) is
-  // reserved for Máster, Administrador, Funcionario and Rector. The
+  // reserved for Máster, Administrador, Secretario and Rector. The
   // matching RoleGuard lives in `src/app/certificates/layout.tsx`.
   'Auxiliar': [
     // Navigation.

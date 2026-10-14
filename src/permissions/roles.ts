@@ -31,7 +31,7 @@ export type BackendRole =
   | 'Máster'
   | 'Auxiliar'
   | 'Administrador'
-  | 'Funcionario'
+  | 'Secretario'
   | 'Rector';
 
 /** Ordered list of every backend role, useful for exhaustive iteration. */
@@ -39,7 +39,7 @@ export const BACKEND_ROLES = [
   'Máster',
   'Auxiliar',
   'Administrador',
-  'Funcionario',
+  'Secretario',
   'Rector',
 ] as const satisfies readonly BackendRole[];
 
@@ -48,7 +48,7 @@ export const BACKEND_ROLE_LABELS: Record<BackendRole, string> = {
   'Máster': 'Máster',
   'Auxiliar': 'Auxiliar',
   'Administrador': 'Administrador',
-  'Funcionario': 'Funcionario',
+  'Secretario': 'Secretario',
   'Rector': 'Rector',
 };
 
@@ -88,9 +88,9 @@ export const PERSONA_LABELS: Record<Persona, string> = {
  * full administration surface. The backend, however, does distinguish them,
  * which is why the permission matrix below keeps them separate.
  *
- * `Funcionario` and `Auxiliar` both map to `academic-secretary` because the
+ * `Secretario` and `Auxiliar` both map to `academic-secretary` because the
  * UX treats them as the same operator persona: the difference is
- * permission scope (Auxiliar can create/update students; Funcionario cannot),
+ * permission scope (Auxiliar can create/update students; Secretario cannot),
  * not UI surface.
  *
  * `null` means the role has no defined persona — surface this to the user
@@ -100,7 +100,7 @@ export const ROLE_TO_PERSONA: Record<BackendRole, Persona | null> = {
   'Máster': 'administrator',
   'Administrador': 'administrator',
   'Rector': 'rector',
-  'Funcionario': 'academic-secretary',
+  'Secretario': 'academic-secretary',
   'Auxiliar': 'academic-secretary',
 };
 
@@ -109,7 +109,7 @@ export const ROLE_TO_PERSONA: Record<BackendRole, Persona | null> = {
  * Useful for surfacing "the personas that can do X" in UI copy.
  */
 export const PERSONA_TO_ROLES: Record<Persona, readonly BackendRole[]> = {
-  'academic-secretary': ['Funcionario', 'Auxiliar'],
+  'academic-secretary': ['Secretario', 'Auxiliar'],
   'administrator': ['Administrador', 'Máster'],
   'rector': ['Rector'],
 };
@@ -148,7 +148,7 @@ export function isPersona(value: unknown): value is Persona {
 export const LANDING_BY_ROLE: Record<BackendRole, string> = {
   'Máster': '/dashboard',
   'Administrador': '/dashboard',
-  'Funcionario': '/dashboard',
+  'Secretario': '/dashboard',
   'Rector': '/dashboard',
   'Auxiliar': '/academic-registry',
 };
