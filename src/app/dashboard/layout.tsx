@@ -10,7 +10,7 @@ import type { BackendRole } from "@/permissions/roles";
 const ALLOWED_ROLES = [
   "Máster",
   "Administrador",
-  "Funcionario",
+  "Secretario",
   "Rector",
 ] as const satisfies readonly BackendRole[];
 

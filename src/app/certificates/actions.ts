@@ -141,7 +141,7 @@ export async function searchStudentsAction(
 // whatever data was retrieved. Call 3 is gated on the backend by
 // `checkRole(['Máster', 'Administrador', 'Auxiliar'])` on
 // `/student-phones/get-by-student`. When the current session's role is
-// `Funcionario` or `Rector`, that call returns 403 and `phones` stays `[]`.
+// `Secretario` or `Rector`, that call returns 403 and `phones` stays `[]`.
 // The failure is captured in `phoneFetchStatus` and surfaced to the UI so
 // the phone field can explain *why* it's empty instead of just showing "—".
 
@@ -331,7 +331,7 @@ export async function fetchStudentProfileAction(
         );
       }
     } else {
-      // Most likely 403 if the current session role is Funcionario or Rector
+      // Most likely 403 if the current session role is Secretario or Rector
       // (both can reach /certificates but neither is in the phone route's
       // checkRole allow-list). See the frontend note above the function.
       console.warn(
@@ -418,6 +418,316 @@ export async function fetchStudentAcademicHistoryAction(
   }
 }
 
+// ── Institution (certificate header) ────────────────────────────────────────
+//
+// Backing endpoints:
+//   POST /institutions/list-one               → name, NIT, DANE code, ...
+//   POST /institution-phones/get-by-institution → phone list
+//
+// The institution id is fixed for this deployment — the system serves a
+// single institution, so id "1" is hard-coded. Multi-institution support
+// would turn this into a config value.
+//
+// Fields the API does not carry yet (resolutions, website, "SEDE Principal")
+// live in `@/lib/certificates/institutionConfig`.
+//
+// NOTE ON AUTHORIZATION: `/institutions/list-one` currently accepts only
+// `['Máster', 'Administrador']`. Until the backend widens it to include
+// `Rector` and `Secretario` (the two other roles that can reach
+// `/certificates`), this call returns 403 for those roles. The preview
+// page handles that gracefully — see `CertificatePreviewPage.tsx`.
+
+const INSTITUTION_ID = "1";
+
+export type InstitutionForCertificate = {
+  id: number;
+  name: string;
+  institutionalCode: string;
+  address: string;
+  email: string;
+  nitId: string;
+  municipality: { id: number; name: string } | null;
+  /** Phone numbers registered in `institucion_telefono`. */
+  phones: string[];
+};
+
+type InstitutionApiBody = {
+  institution?: {
+    id: number;
+    name: string;
+    institutionalCode: string;
+    address: string;
+    email: string;
+    nitId: string;
+    municipality: { id: number; name: string } | null;
+  };
+};
+
+type InstitutionPhoneListApiBody = {
+  institutionPhones?: Array<{
+    id: number;
+    phone?: { id: number; number: string } | null;
+  }>;
+};
+
+export async function fetchInstitutionForCertificateAction(
+  token: string
+): Promise<InstitutionForCertificate | null> {
+  if (!API_URL || !API_KEY || !token) return null;
+
+  const authHeaders = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    apikey: API_KEY,
+    Authorization: `Bearer ${token}`,
+  };
+
+  const [institutionOutcome, phoneOutcome] = await Promise.allSettled([
+    fetch(`${API_URL}/institutions/list-one`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ id: INSTITUTION_ID }),
+      cache: "no-store",
+    }),
+    fetch(`${API_URL}/institution-phones/get-by-institution`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ institutionId: INSTITUTION_ID }),
+      cache: "no-store",
+    }),
+  ]);
+
+  if (institutionOutcome.status !== "fulfilled") return null;
+  const institutionRes = institutionOutcome.value;
+  if (!institutionRes.ok) {
+    console.warn(
+      `[fetchInstitutionForCertificateAction] institutions/list-one → ${institutionRes.status}`
+    );
+    return null;
+  }
+
+  let institutionBody: InstitutionApiBody;
+  try {
+    institutionBody = (await institutionRes.json()) as InstitutionApiBody;
+  } catch {
+    return null;
+  }
+  if (!institutionBody.institution) return null;
+
+  // Phones are best-effort — a failing phone call must not blank the header.
+  let phones: string[] = [];
+  if (phoneOutcome.status === "fulfilled" && phoneOutcome.value.ok) {
+    try {
+      const body =
+        (await phoneOutcome.value.json()) as InstitutionPhoneListApiBody;
+      if (Array.isArray(body.institutionPhones)) {
+        phones = body.institutionPhones
+          .map((link) => link.phone?.number)
+          .filter((n): n is string => typeof n === "string" && n.length > 0);
+      }
+    } catch {
+      /* keep phones empty */
+    }
+  }
+
+  return { ...institutionBody.institution, phones };
+}
+
+// ── Certificate signers ─────────────────────────────────────────────────────
+//
+// A signed certificate carries two signatures: the issuer (the current
+// session's user) and the institution's rector.
+//
+// Both come from POST /users/get-signer-candidates, which returns only
+// the fields the certificate needs (name, document, role, municipality,
+// academic level) and only users whose role is one of Rector /
+// Secretario / Administrador. It is reachable by every role that can
+// reach /certificates, unlike /users/list-all which is admin-only.
+//
+// The `municipality` object carries a nested `department` because
+// Colombian identity documents are issued by "City - Department"
+// (`de Roldanillo - Valle del Cauca`), and the certificate prints both.
+//
+// The `academicLevel` object carries the abbreviation (e.g. "Mgs",
+// "Esp", "Ph.D") used to prefix the signer's name.
+//
+// When the certificate-generation endpoint lands and starts writing
+// `firma_certificado` rows, replace this lookup with a read of that
+// table — the returned `CertificateSigner` shape stays the same.
+
+export type CertificateSigner = {
+  fullName: string;
+  /** Abbreviated document type, e.g. "c.c" / "T.I" / "Pasaporte". */
+  documentTypeAbbr: string;
+  documentNumber: string;
+  /**
+   * City and department where the document was issued, already joined
+   * with " - " (e.g. "Roldanillo - Valle del Cauca"). Empty when the
+   * signer has no municipality registered.
+   */
+  documentCity: string;
+  /**
+   * Academic-level abbreviation from the `nivel_academico` ENUM
+   * (e.g. "Téc", "Tgo", "Lic", "Esp", "Mgs", "Ph.D"). Empty string when
+   * the signer has no academic level registered — the UI then renders
+   * just the name without a prefix.
+   */
+  academicLevelAbbr: string;
+  /** Raw role name from the DB, e.g. "Rector" / "Secretario". */
+  roleLabel: string;
+};
+
+export type CertificateSigners = {
+  issuer: CertificateSigner | null;
+  rector: CertificateSigner | null;
+};
+
+type SignerCandidateShape = {
+  id: number;
+  firstName: string;
+  lastName: string;
+  documentNumber: string;
+  documentType: { id: number; name: string } | null;
+  municipality: {
+    id: number;
+    name: string;
+    /** Present only if the backend includes the nested department. */
+    department?: { id: number; name: string } | null;
+  } | null;
+  academicLevel: {
+    id: number;
+    name: string;
+    abbreviation: string;
+  } | null;
+  role: { id: number; name: string } | null;
+};
+
+type SignerCandidatesApiBody = { users?: SignerCandidateShape[] };
+
+function abbreviateDocumentType(name: string | null | undefined): string {
+  switch (name) {
+    case "Cédula de Ciudadanía":
+      return "c.c";
+    case "Cédula de Extranjería":
+      return "c.e";
+    case "Tarjeta de Identidad":
+      return "T.I";
+    case "Pasaporte":
+      return "Pasaporte";
+    case "NIT":
+      return "NIT";
+    default:
+      return "doc.";
+  }
+}
+
+function buildSigner(user: SignerCandidateShape): CertificateSigner {
+  const city = user.municipality?.name ?? "";
+  const department = user.municipality?.department?.name ?? "";
+
+  // "Roldanillo - Valle del Cauca" when both are present;
+  // whichever one exists when only one is; "" when neither.
+  const cityAndDepartment =
+    city && department ? `${city} - ${department}` : city || department;
+
+  return {
+    fullName: `${user.firstName} ${user.lastName}`.trim(),
+    documentTypeAbbr: abbreviateDocumentType(user.documentType?.name),
+    documentNumber: user.documentNumber,
+    documentCity: cityAndDepartment,
+    academicLevelAbbr: user.academicLevel?.abbreviation ?? "",
+    roleLabel: user.role?.name ?? "",
+  };
+}
+
+export async function fetchCertificateSignersAction(
+  token: string,
+  issuerUserId: number
+): Promise<CertificateSigners> {
+  if (!API_URL || !API_KEY || !token) {
+    return { issuer: null, rector: null };
+  }
+
+  try {
+    const res = await fetch(`${API_URL}/users/get-signer-candidates`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        apikey: API_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({}),
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      console.warn(
+        `[fetchCertificateSignersAction] users/get-signer-candidates → ${res.status}`
+      );
+      return { issuer: null, rector: null };
+    }
+
+    const body = (await res.json()) as SignerCandidatesApiBody;
+    const candidates = Array.isArray(body.users) ? body.users : [];
+
+    const issuerUser = candidates.find((u) => u.id === issuerUserId) ?? null;
+    const rectorUser =
+      candidates.find((u) => u.role?.name === "Rector") ?? null;
+
+    return {
+      issuer: issuerUser ? buildSigner(issuerUser) : null,
+      rector: rectorUser ? buildSigner(rectorUser) : null,
+    };
+  } catch (error) {
+    console.warn("[fetchCertificateSignersAction] request failed:", error);
+    return { issuer: null, rector: null };
+  }
+}
+
+// ── Certificate act-number preview ──────────────────────────────────────────
+//
+// Backing endpoint: GET /certificates/next-act-number
+// Returns the act number that WOULD be assigned to the next certificate
+// created today, WITHOUT creating it — the service only reads the highest
+// existing consecutive for the current year and increments it. Safe to
+// call on every preview mount.
+
+type NextActNumberApiBody = {
+  actNumber?: unknown;
+};
+
+export async function fetchNextActNumberAction(
+  token: string
+): Promise<string | null> {
+  if (!API_URL || !API_KEY || !token) return null;
+
+  try {
+    const res = await fetch(`${API_URL}/certificates/next-act-number`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        apikey: API_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      console.warn(
+        `[fetchNextActNumberAction] certificates/next-act-number → ${res.status}`
+      );
+      return null;
+    }
+
+    const body = (await res.json()) as NextActNumberApiBody;
+    return typeof body.actNumber === "string" ? body.actNumber : null;
+  } catch (error) {
+    console.warn("[fetchNextActNumberAction] request failed:", error);
+    return null;
+  }
+}
+
 // ── Internal helpers ────────────────────────────────────────────────────────
 
 /**
@@ -438,12 +748,8 @@ export async function fetchStudentAcademicHistoryAction(
  *     instead of a partial count that could be mistaken for a real
  *     number.
  *
- * All lookups run in parallel. The typical enrollment list is 4–8 items,
- * so the whole batch resolves in roughly the latency of a single call.
- *
  * `enrollmentId` is sent as a STRING because the backend's Joi schema
- * (`certificateSchema.getCertificateByEnrollment`) validates it with
- * `Joi.string().pattern(/^\d{1,10}$/)` — a raw number would 400.
+ * validates it with `Joi.string().pattern(/^\d{1,10}$/)`.
  */
 async function countCertificatesForEnrollments(
   apiUrl: string,
@@ -467,7 +773,6 @@ async function countCertificatesForEnrollments(
 
   for (const result of results) {
     if (result.status === "rejected") {
-      // Network-level failure — we cannot trust the total.
       console.warn(
         "[countCertificatesForEnrollments] certificate lookup rejected:",
         result.reason
@@ -480,7 +785,6 @@ async function countCertificatesForEnrollments(
     if (res.ok) {
       count += 1;
     } else if (res.status !== 404) {
-      // 403 / 5xx / anything else — we cannot trust the total.
       console.warn(
         `[countCertificatesForEnrollments] certificates/get-by-enrollment → ${res.status}`
       );
