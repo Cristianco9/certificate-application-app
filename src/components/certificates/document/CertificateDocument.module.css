@@ -3,26 +3,50 @@
    ─────────────────────────────────────────────────────────────────────────────
    The certificate is a fixed-size legal document. Every dimension below
    is in `cm`, matching the shared template (Oficio, 21.6 × 35.6 cm).
-   Screen preview renders at the same physical size; `@page` in print
-   forces the same dimensions on paper.
+
+   On screen:
+     - Only the page at `currentPageIndex` is visible.
+     - The physical-size page lives inside `.stage`, which is scaled by a
+       `transform` computed in JS. `.frame` is sized to the *scaled* page
+       so it participates correctly in the page layout (no overflow, no
+       unexpected scrollbars on mobile).
+
+   On paper:
+     - Every page renders at its true physical size, one per sheet.
+     - The scale transform, the frame dimensions, and the on-screen
+       page-hiding rule are all neutralized inside `@media print`.
    ──────────────────────────────────────────────────────────────────────────── */
 
-/* ── Screen container ─────────────────────────────────────────────────────── */
+/* ── Viewport — full-width centering container ────────────────────────────── */
 
-.container {
+.viewport {
+  width: 100%;
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1.5rem;
-  background: #6b7280;
-  padding: 2rem 1rem;
-  border-radius: 0.5rem;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+/* Visible-size wrapper. Its dimensions match what the user sees and are
+   set inline from the computed scale (`calc(21.6cm * scale)`). */
+.frame {
+  position: relative;
+}
+
+/* Physical-size canvas. `transform: scale()` is applied inline; because
+   transform does not affect layout, `.frame` owns the visible dimensions
+   while `.stage` keeps the certificate at its real 21.6 × 35.6 cm size. */
+.stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 21.6cm;
+  height: 35.6cm;
+  transform-origin: top left;
 }
 
 /* ── A single page ────────────────────────────────────────────────────────── */
 
 .page {
-  position: relative;
   width: 21.6cm;
   height: 35.6cm;
   padding: 2cm;
@@ -34,6 +58,14 @@
   flex-direction: column;
   box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.35);
   overflow: hidden;
+}
+
+/* On screen, only the current page is visible. Print ignores this rule
+   (it lives inside `@media screen`), so every page prints. */
+@media screen {
+  .page:not(.current) {
+    display: none;
+  }
 }
 
 /* ── Header ───────────────────────────────────────────────────────────────── */
@@ -266,12 +298,26 @@
 }
 
 @media print {
-  .container {
+  .viewport {
     display: block;
-    padding: 0;
-    gap: 0;
-    background: #ffffff;
-    border-radius: 0;
+  }
+
+  /* Reset the visible frame to content-sized so the pages stack naturally.
+     `!important` beats the inline `calc(...)` width/height set in JSX. */
+  .frame {
+    position: static;
+    width: auto !important;
+    height: auto !important;
+  }
+
+  /* Neutralize the on-screen scale transform. The page prints at its
+     true physical size, unaffected by whatever scale was showing on
+     screen. */
+  .stage {
+    position: static;
+    width: auto;
+    height: auto;
+    transform: none !important;
   }
 
   .page {

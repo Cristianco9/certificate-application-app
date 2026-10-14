@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Image from "next/image";
 
 import type {
@@ -19,6 +20,28 @@ import {
 
 import styles from "./CertificateDocument.module.css";
 
+// ── Physical page dimensions (Oficio) ──────────────────────────────────────
+
+const PAGE_WIDTH_CM = 21.6;
+const PAGE_HEIGHT_CM = 35.6;
+
+/** CSS reference pixels per centimeter (1in = 96px, 1in = 2.54cm). */
+const PX_PER_CM = 96 / 2.54;
+
+/**
+ * `useLayoutEffect` on the client, `useEffect` during SSR.
+ *
+ * `CertificateDocument` only ever mounts after the preview page's data
+ * fetch resolves (inside a `useEffect`), so this always runs client-side
+ * and the layout effect fires before the first paint — no flash of an
+ * unscaled page. The alias keeps the linter quiet and stays correct if
+ * this component is ever moved into an SSR-rendered branch.
+ */
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+// ── Props ──────────────────────────────────────────────────────────────────
+
 type Props = {
   actNumber: string | null;
   student: CertificateSearchStudent;
@@ -27,16 +50,26 @@ type Props = {
   signers: CertificateSigners;
   /** Pre-formatted display date, e.g. "13 de octubre de 2026". */
   issueDate: string;
+  /**
+   * Zero-based index of the page currently visible on screen.
+   * Ignored in print — every page renders.
+   */
+  currentPageIndex?: number;
 };
 
 /**
- * Renders the certificate as a stack of Oficio-sized pages.
+ * Renders the certificate as an Oficio-sized page.
  *
  * Pagination rule: ONE PAGE PER ENROLLMENT. If the certificate covers
  * three enrollments, three pages are rendered. The first page carries the
  * student's opening sentence; the last page carries the legal footer and
  * the two signatures. Every page carries the institution header and the
  * "Página X de Y" counter.
+ *
+ * Screen vs print:
+ *   - Screen shows only the page at `currentPageIndex`, scaled down to
+ *     fit the available width (never scaled up past 1:1).
+ *   - Print renders every page at its true physical size, one per sheet.
  *
  * SCORING SYSTEM: the certificate's legal text is chosen based on the
  * scoring system the scores belong to (see `isOldScale`):
@@ -51,7 +84,37 @@ export function CertificateDocument({
   enrollments,
   signers,
   issueDate,
+  currentPageIndex = 0,
 }: Props) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  // Recompute the display scale whenever the viewport resizes. Runs
+  // before paint on the initial mount, so the user never sees the
+  // certificate at 1:1 on a narrow screen.
+  useIsomorphicLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const update = () => {
+      const style = getComputedStyle(viewport);
+      const paddingX =
+        parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      const available = viewport.clientWidth - paddingX;
+      const pageWidthPx = PAGE_WIDTH_CM * PX_PER_CM;
+
+      // Clamp to 1 so we never magnify on a wide desktop screen.
+      const next = Math.min(1, available / pageWidthPx);
+      setScale(next > 0 ? next : 1);
+    };
+
+    update();
+
+    const ro = new ResizeObserver(update);
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  }, []);
+
   // Computed once at the top level and threaded down — the same scale
   // governs every page of the certificate, since all enrollments belong
   // to the same student and use a consistent scoring system.
@@ -61,25 +124,43 @@ export function CertificateDocument({
     enrollments.length > 0 ? enrollments : [null];
   const totalPages = pages.length;
 
+  // Defensive clamp — the caller is expected to pass a valid index, but
+  // this component should never throw if it doesn't.
+  const safeIndex = Math.min(Math.max(currentPageIndex, 0), totalPages - 1);
+
   return (
-    <div className={styles.container}>
-      {pages.map((enrollment, index) => (
-        <CertificatePage
-          key={enrollment?.enrollmentId ?? "empty"}
-          pageIndex={index + 1}
-          totalPages={totalPages}
-          isFirstPage={index === 0}
-          isLastPage={index === totalPages - 1}
-          enrollment={enrollment}
-          allEnrollments={enrollments}
-          student={student}
-          institution={institution}
-          signers={signers}
-          actNumber={actNumber}
-          issueDate={issueDate}
-          oldScale={oldScale}
-        />
-      ))}
+    <div ref={viewportRef} className={styles.viewport}>
+      <div
+        className={styles.frame}
+        style={{
+          width: `calc(${PAGE_WIDTH_CM}cm * ${scale})`,
+          height: `calc(${PAGE_HEIGHT_CM}cm * ${scale})`,
+        }}
+      >
+        <div
+          className={styles.stage}
+          style={{ transform: `scale(${scale})` }}
+        >
+          {pages.map((enrollment, index) => (
+            <CertificatePage
+              key={enrollment?.enrollmentId ?? "empty"}
+              pageIndex={index + 1}
+              totalPages={totalPages}
+              isCurrent={index === safeIndex}
+              isFirstPage={index === 0}
+              isLastPage={index === totalPages - 1}
+              enrollment={enrollment}
+              allEnrollments={enrollments}
+              student={student}
+              institution={institution}
+              signers={signers}
+              actNumber={actNumber}
+              issueDate={issueDate}
+              oldScale={oldScale}
+            />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -89,6 +170,7 @@ export function CertificateDocument({
 function CertificatePage({
   pageIndex,
   totalPages,
+  isCurrent,
   isFirstPage,
   isLastPage,
   enrollment,
@@ -102,6 +184,8 @@ function CertificatePage({
 }: {
   pageIndex: number;
   totalPages: number;
+  /** `true` for the page the user is currently viewing (screen only). */
+  isCurrent: boolean;
   isFirstPage: boolean;
   isLastPage: boolean;
   enrollment: EnrollmentBlock | null;
@@ -116,7 +200,10 @@ function CertificatePage({
   const fullName = getFullNameUpper(student);
 
   return (
-    <article className={styles.page}>
+    <article
+      className={`${styles.page} ${isCurrent ? styles.current : ""}`}
+      aria-hidden={!isCurrent}
+    >
       <PageHeader institution={institution} oldScale={oldScale} />
 
       {isFirstPage && (
