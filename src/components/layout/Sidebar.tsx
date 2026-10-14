@@ -40,8 +40,6 @@ const NAV_ITEMS: readonly NavItem[] = [
     getHref: () => "/certificates",
   },
   {
-    // Máster, Administrador, Funcionario, Rector. Auxiliar does not have
-    // NAV_DASHBOARD, so it sees "Registro académico" instead.
     key: "home",
     label: "Menu",
     icon: Home,
@@ -49,7 +47,6 @@ const NAV_ITEMS: readonly NavItem[] = [
     getHref: (role) => LANDING_BY_ROLE[role],
   },
   {
-    // Máster, Administrador and Auxiliar only (see permissions.ts).
     key: "academic-registry",
     label: "Registro académico",
     icon: BookOpen,
@@ -76,7 +73,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const logout = useLogout();
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
 
-  // localStorage is client-only, so read the session after mount.
   useEffect(() => {
     const session = getSessionState();
     if (session.status === "authenticated") {
@@ -84,7 +80,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
     }
   }, []);
 
-  // Escape closes the mobile drawer.
   useEffect(() => {
     if (!open) return;
 
@@ -104,12 +99,11 @@ export function Sidebar({ open, onClose }: SidebarProps) {
 
   return (
     <>
-      {/* Overlay — mobile drawer only */}
       {open && (
         <div
           aria-hidden="true"
           onClick={onClose}
-          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden print:hidden"
         />
       )}
 
@@ -123,9 +117,9 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           ${open ? "translate-x-0" : "-translate-x-full max-lg:invisible"}
           lg:sticky lg:top-0 lg:z-auto lg:w-1/5 lg:min-w-56 lg:shrink-0
           lg:translate-x-0
+          print:hidden
         `}
       >
-        {/* Close button — mobile drawer only */}
         <button
           type="button"
           onClick={onClose}
@@ -141,7 +135,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </button>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pt-8 xl:px-6">
-          {/* Avatar + title */}
           <div className="flex flex-col items-center">
             <span
               aria-hidden="true"
@@ -157,7 +150,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             </p>
           </div>
 
-          {/* Navigation */}
           <nav aria-label="Secciones" className="mt-6">
             <ul className="border-b border-white">
               {user &&
@@ -195,7 +187,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           </nav>
         </div>
 
-        {/* Logout */}
         <div className="px-5 pt-4 pb-8 xl:px-6">
           <button
             type="button"

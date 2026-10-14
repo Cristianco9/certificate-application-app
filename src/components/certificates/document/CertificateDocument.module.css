@@ -1,0 +1,287 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   CERTIFICATE DOCUMENT — print-perfect styles
+   ─────────────────────────────────────────────────────────────────────────────
+   The certificate is a fixed-size legal document. Every dimension below
+   is in `cm`, matching the shared template (Oficio, 21.6 × 35.6 cm).
+   Screen preview renders at the same physical size; `@page` in print
+   forces the same dimensions on paper.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* ── Screen container ─────────────────────────────────────────────────────── */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  background: #6b7280;
+  padding: 2rem 1rem;
+  border-radius: 0.5rem;
+}
+
+/* ── A single page ────────────────────────────────────────────────────────── */
+
+.page {
+  position: relative;
+  width: 21.6cm;
+  height: 35.6cm;
+  padding: 2cm;
+  background: #ffffff;
+  color: #000000;
+  font-family: Arial, Helvetica, sans-serif;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.logoBox {
+  width: 3.5rem;
+  flex-shrink: 0;
+}
+
+.logo {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.ieData,
+.headquartersData {
+  font-size: 0.6rem;
+  line-height: 1.35;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.ieData > p,
+.headquartersData > p {
+  margin: 0;
+}
+
+.ieData > p:first-child {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ── Certificate title block (page 1 only) ────────────────────────────────── */
+
+.titleBlock {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.title {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-align: center;
+}
+
+.lawParagraph {
+  width: 42rem;
+  max-width: 100%;
+  text-align: center;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.subtitle {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0.25rem 0 0 0;
+  text-align: center;
+}
+
+.studentIntro {
+  width: 42rem;
+  max-width: 100%;
+  text-align: justify;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ── Enrollment table block ───────────────────────────────────────────────── */
+
+.enrollmentBlock {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.enrollmentHeading {
+  text-align: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.enrollmentSubheading {
+  text-align: center;
+  font-size: 0.8rem;
+  font-weight: 400;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.table {
+  margin-top: 0.4rem;
+  width: 42.5rem;
+  max-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.table th,
+.table td {
+  border: 1px solid #000;
+  padding: 0.15rem 0.35rem;
+  line-height: 1.3;
+  vertical-align: top;
+}
+
+.table th {
+  text-align: center;
+  font-weight: 700;
+  background: #f3f4f6;
+}
+
+.colCenter {
+  text-align: center;
+}
+
+/* ── Footer (last page only) ──────────────────────────────────────────────── */
+
+.footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.footerText {
+  width: 42rem;
+  max-width: 100%;
+  font-size: 0.8rem;
+  text-align: justify;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.footerDate {
+  width: 42rem;
+  max-width: 100%;
+  font-size: 0.8rem;
+  text-align: left;
+  margin: 0.5rem 0 0 0;
+}
+
+.signatures {
+  width: 42rem;
+  max-width: 100%;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  gap: 2rem;
+  margin-top: 2rem;
+}
+
+.signature {
+  flex: 1;
+  font-size: 0.8rem;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.signatureLine {
+  border-top: 1px solid #000;
+  margin-bottom: 0.35rem;
+}
+
+.signatureName {
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.3;
+}
+
+.signatureMeta {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.signatureRole {
+  margin: 0.15rem 0 0 0;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* ── Page counter (every page, bottom-right) ──────────────────────────────── */
+
+.pageCounter {
+  position: absolute;
+  right: 2cm;
+  top: 1cm;
+  font-size: 0.65rem;
+  color: #4b5563;
+  font-variant-numeric: tabular-nums;
+}
+
+.pageCounterLabel {
+  font-weight: 700;
+}
+
+/* ── Print ────────────────────────────────────────────────────────────────── */
+
+@page {
+  size: 21.6cm 35.6cm; /* Oficio */
+  margin: 0;
+}
+
+@media print {
+  .container {
+    display: block;
+    padding: 0;
+    gap: 0;
+    background: #ffffff;
+    border-radius: 0;
+  }
+
+  .page {
+    box-shadow: none;
+    page-break-after: always;
+    break-after: page;
+  }
+
+  .page:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+}

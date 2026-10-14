@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   ChevronLeft,
@@ -20,6 +21,7 @@ import {
 } from "@/app/certificates/actions";
 import { getToken } from "@/lib/auth/token";
 import { getSelectedStudentId } from "@/lib/certificates/searchSession";
+import { saveSelectedEnrollments } from "@/lib/certificates/previewSession";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -72,19 +74,9 @@ function groupHistoryByEnrollment(rows: AcademicHistoryRow[]): EnrollmentGroup[]
     group.subjects.push(row);
   }
 
-  // Oldest year first — matches the natural reading order of an academic history.
   return Array.from(map.values()).sort((a, b) => (a.year ?? 0) - (b.year ?? 0));
 }
 
-/**
- * Average of the numeric subjects of a single enrollment.
- *
- * Uses the effective grade per subject (the higher of originalScore /
- * remedialScore) so a student whose remedial exam lifted a failing grade
- * isn't penalized in the summary. Alphabetic scores are skipped — there
- * is no meaningful numeric average to derive from them without the
- * backend's equivalence table (which the frontend must not duplicate).
- */
 function computeAverage(subjects: AcademicHistoryRow[]): string {
   const numeric = subjects
     .filter((s) => s.scoreType === "NUMERICA" && s.subject)
@@ -105,12 +97,12 @@ function computeAverage(subjects: AcademicHistoryRow[]): string {
 // ── Main component ──────────────────────────────────────────────────────────
 
 export function CertificateGenerationPage() {
+  const router = useRouter();
   const [state, setState] = useState<ViewState>({ kind: "loading" });
   const [mode, setMode] = useState<SelectionMode>("all");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [currentIndex, setCurrentIndex] = useState(0);
 
-  // ── Fetch on mount ──────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -138,8 +130,6 @@ export function CertificateGenerationPage() {
 
       const groups = groupHistoryByEnrollment(history);
       setState({ kind: "loaded", profile, groups });
-
-      // Default: "Todos" mode, every enrollment checked.
       setSelectedIds(new Set(groups.map((g) => g.enrollmentId)));
       setCurrentIndex(0);
     });
@@ -158,27 +148,22 @@ export function CertificateGenerationPage() {
     [groups, selectedIds]
   );
 
-  // Clamp the carousel index defensively — the user can freely toggle
-  // enrollments off while browsing, which shrinks the visible list.
   const safeIndex =
     selectedGroups.length === 0
       ? 0
       : Math.min(currentIndex, selectedGroups.length - 1);
   const currentGroup = selectedGroups[safeIndex] ?? null;
 
-  // ── Handlers ────────────────────────────────────────────────────────────
   function handleSelectMode(next: SelectionMode) {
     setMode(next);
     if (next === "all") {
       setSelectedIds(new Set(groups.map((g) => g.enrollmentId)));
     }
-    // Switching to "specific" keeps the current selection so the user
-    // only has to uncheck what they don't want — cheaper than starting over.
     setCurrentIndex(0);
   }
 
   function handleToggle(id: number) {
-    if (mode === "all") return; // checkboxes are disabled in "all" mode
+    if (mode === "all") return;
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -188,22 +173,33 @@ export function CertificateGenerationPage() {
     setCurrentIndex(0);
   }
 
+  /**
+   * Hands the chosen enrollments to the preview page via sessionStorage
+   * (numeric ids only — no URL state) and navigates.
+   *
+   * Disabled while nothing is selected: a certificate needs at least one
+   * enrollment to summarize. The label stays constant; the disabled
+   * state and title explain why it cannot be pressed.
+   */
+  function handleGenerate() {
+    if (selectedGroups.length === 0) return;
+    saveSelectedEnrollments(selectedGroups.map((g) => g.enrollmentId));
+    router.push("/certificates/preview");
+  }
+
   const goPrev = () => setCurrentIndex((i) => Math.max(0, i - 1));
   const goNext = () =>
     setCurrentIndex((i) => Math.min(selectedGroups.length - 1, i + 1));
 
-  // ── Render ──────────────────────────────────────────────────────────────
   return (
     <main className="min-h-full bg-[#F0EDED] px-4 py-6 sm:px-6 sm:py-8 lg:px-10">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-5">
-        {/* Page title bar */}
         <div className="rounded-xl bg-[#3B5FC7] px-4 py-2.5 text-center shadow-sm">
           <h1 className="text-sm font-extrabold tracking-[0.08em] text-white uppercase sm:text-base">
             Generar certificado
           </h1>
         </div>
 
-        {/* Back link */}
         <Link
           href="/certificates/student"
           aria-label="Volver al perfil del estudiante"
@@ -239,6 +235,8 @@ export function CertificateGenerationPage() {
               selectedIds={selectedIds}
               onSelectMode={handleSelectMode}
               onToggle={handleToggle}
+              onGenerate={handleGenerate}
+              canGenerate={selectedGroups.length > 0}
             />
             <ScoresPanel
               currentGroup={currentGroup}
@@ -263,6 +261,8 @@ function EnrollmentSelector({
   selectedIds,
   onSelectMode,
   onToggle,
+  onGenerate,
+  canGenerate,
 }: {
   profile: StudentProfile;
   groups: EnrollmentGroup[];
@@ -270,12 +270,13 @@ function EnrollmentSelector({
   selectedIds: Set<number>;
   onSelectMode: (mode: SelectionMode) => void;
   onToggle: (id: number) => void;
+  onGenerate: () => void;
+  canGenerate: boolean;
 }) {
   const fullName = getFullName(profile.student);
 
   return (
     <section className="flex flex-col gap-4 rounded-2xl border border-gray-200/80 bg-white p-5 shadow-[0_20px_50px_-30px_rgba(40,97,196,0.25)] sm:p-6">
-      {/* Student header */}
       <div className="flex items-center gap-3">
         <span
           aria-hidden="true"
@@ -302,7 +303,6 @@ function EnrollmentSelector({
         Selección de certificado
       </h2>
 
-      {/* Mode toggle */}
       <div className="flex items-center justify-center gap-2">
         <ModeButton
           active={mode === "specific"}
@@ -318,7 +318,6 @@ function EnrollmentSelector({
         </ModeButton>
       </div>
 
-      {/* Enrollment list */}
       {groups.length === 0 ? (
         <p className="rounded-md bg-gray-50 px-3 py-6 text-center text-sm text-gray-500">
           Este estudiante no tiene matrículas registradas.
@@ -337,11 +336,15 @@ function EnrollmentSelector({
         </ul>
       )}
 
-      {/* Action button */}
       <button
         type="button"
-        disabled
-        title="Esta función estará disponible próximamente"
+        onClick={onGenerate}
+        disabled={!canGenerate}
+        title={
+          canGenerate
+            ? undefined
+            : "Selecciona al menos una matrícula para continuar"
+        }
         className="
           mt-1 inline-flex h-11 w-full items-center justify-center gap-2
           rounded-full bg-[#3B5FC7] px-6 text-sm font-bold text-white
@@ -471,7 +474,6 @@ function ScoresPanel({
         <EmptyScoresState selectedCount={selectedCount} />
       ) : (
         <>
-          {/* Header: grade + academic year */}
           <div className="grid grid-cols-2 gap-4 border-b border-gray-100 pb-3">
             <div>
               <p className="text-[11px] font-bold tracking-wider text-gray-500 uppercase">
@@ -491,7 +493,6 @@ function ScoresPanel({
             </div>
           </div>
 
-          {/* Scores table */}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[420px] border-collapse text-left">
               <thead>
@@ -562,7 +563,6 @@ function ScoresPanel({
             </table>
           </div>
 
-          {/* Footer: carousel + average */}
           <div className="mt-1 flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
             <CarouselButton
               direction="prev"

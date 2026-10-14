@@ -12,14 +12,16 @@ type AppShellProps = {
 /**
  * Authenticated page frame: sidebar (1/5 width on desktop, drawer on
  * smaller screens) + page content. Wrap any protected route with it.
+ *
+ * The mobile header and the sidebar are `print:hidden` so printing a
+ * page (e.g. the certificate preview) emits only the page content.
  */
 export function AppShell({ children }: AppShellProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   return (
     <div className="flex min-h-screen flex-col lg:flex-row">
-      {/* Top bar — visible below lg only */}
-      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 bg-[#3B5FC7] px-4 text-white lg:hidden">
+      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 bg-[#3B5FC7] px-4 text-white lg:hidden print:hidden">
         <button
           type="button"
           onClick={() => setIsSidebarOpen(true)}
