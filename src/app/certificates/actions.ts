@@ -135,9 +135,10 @@ export async function searchStudentsAction(
 //   1. POST /students/list-one              → personal data (REQUIRED)
 //   2. POST /enrollments/get-by-student     → enrollment list
 //   3. POST /student-phones/get-by-student  → phone numbers
+//   4. POST /certificates/get-by-enrollment → certificate count (fan-out)
 //
-// Calls 2 and 3 are non-fatal: if either fails, the profile still renders
-// with the personal data. Call 3 is gated on the backend by
+// Calls 2–4 are non-fatal: if any fails, the profile still renders with
+// whatever data was retrieved. Call 3 is gated on the backend by
 // `checkRole(['Máster', 'Administrador', 'Auxiliar'])` on
 // `/student-phones/get-by-student`. When the current session's role is
 // `Funcionario` or `Rector`, that call returns 403 and `phones` stays `[]`.
@@ -173,7 +174,15 @@ export type StudentProfile = {
   phoneFetchStatus: number;
   enrollmentCount: number;
   lastEnrollmentYear: number | null;
-  /** Always `null` today — the backend does not expose certificates yet. */
+  /**
+   * Number of certificates already issued for this student, derived from
+   * POST /certificates/get-by-enrollment per enrollment.
+   *
+   * `null` means the count could not be trusted — one of the underlying
+   * calls returned a status other than 200 / 404 (403 role mismatch,
+   * 5xx, or network failure). The UI renders "—" in that case rather
+   * than a misleading partial number.
+   */
   certificateCount: number | null;
 };
 
@@ -255,6 +264,7 @@ export async function fetchStudentProfileAction(
   // ── Enrollments ──────────────────────────────────────────────────────
   let enrollmentCount = 0;
   let lastEnrollmentYear: number | null = null;
+  const enrollmentIds: number[] = [];
 
   if (enrollmentOutcome.status === "fulfilled") {
     const res = enrollmentOutcome.value;
@@ -264,6 +274,13 @@ export async function fetchStudentProfileAction(
         if (Array.isArray(body.enrollments)) {
           enrollmentCount = body.enrollments.length;
           for (const e of body.enrollments) {
+            // Collect the id for the certificate-count fan-out below.
+            // Guard against a malformed row so a bad record doesn't
+            // poison the whole list.
+            if (typeof e.id === "number") {
+              enrollmentIds.push(e.id);
+            }
+
             const year = e.group?.year;
             if (
               typeof year === "number" &&
@@ -328,13 +345,24 @@ export async function fetchStudentProfileAction(
     );
   }
 
+  // ── Certificates ─────────────────────────────────────────────────────
+  // One certificate per enrollment (`certificado.id_matricula_certificado`
+  // is UNIQUE on the backend), so the student's certificate count is
+  // exactly the number of enrollments that already have a certificate.
+  // See `countCertificatesForEnrollments` for the failure semantics.
+  const certificateCount = await countCertificatesForEnrollments(
+    API_URL,
+    authHeaders,
+    enrollmentIds
+  );
+
   return {
     student: studentBody.student,
     phones,
     phoneFetchStatus,
     enrollmentCount,
     lastEnrollmentYear,
-    certificateCount: null,
+    certificateCount,
   };
 }
 
@@ -388,4 +416,78 @@ export async function fetchStudentAcademicHistoryAction(
   } catch {
     return [];
   }
+}
+
+// ── Internal helpers ────────────────────────────────────────────────────────
+
+/**
+ * Counts how many of the given enrollments already have a certificate
+ * issued for them.
+ *
+ * Backend contract (`POST /certificates/get-by-enrollment`):
+ *   200 → { certificate: { ... } }  → this enrollment has a certificate
+ *   404 → no certificate for this enrollment (expected, not an error)
+ *   any other status → unexpected; the total cannot be trusted
+ *
+ * Failure semantics:
+ *   - A 404 is counted as "no certificate" and does NOT poison the
+ *     total — it is the normal state for an enrollment that has not
+ *     yet been certified.
+ *   - Any other non-2xx status (403 role mismatch, 5xx, network error)
+ *     collapses the whole result to `null`, so the UI renders "—"
+ *     instead of a partial count that could be mistaken for a real
+ *     number.
+ *
+ * All lookups run in parallel. The typical enrollment list is 4–8 items,
+ * so the whole batch resolves in roughly the latency of a single call.
+ *
+ * `enrollmentId` is sent as a STRING because the backend's Joi schema
+ * (`certificateSchema.getCertificateByEnrollment`) validates it with
+ * `Joi.string().pattern(/^\d{1,10}$/)` — a raw number would 400.
+ */
+async function countCertificatesForEnrollments(
+  apiUrl: string,
+  authHeaders: Record<string, string>,
+  enrollmentIds: number[]
+): Promise<number | null> {
+  if (enrollmentIds.length === 0) return 0;
+
+  const results = await Promise.allSettled(
+    enrollmentIds.map((enrollmentId) =>
+      fetch(`${apiUrl}/certificates/get-by-enrollment`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ enrollmentId: String(enrollmentId) }),
+        cache: "no-store",
+      })
+    )
+  );
+
+  let count = 0;
+
+  for (const result of results) {
+    if (result.status === "rejected") {
+      // Network-level failure — we cannot trust the total.
+      console.warn(
+        "[countCertificatesForEnrollments] certificate lookup rejected:",
+        result.reason
+      );
+      return null;
+    }
+
+    const res = result.value;
+
+    if (res.ok) {
+      count += 1;
+    } else if (res.status !== 404) {
+      // 403 / 5xx / anything else — we cannot trust the total.
+      console.warn(
+        `[countCertificatesForEnrollments] certificates/get-by-enrollment → ${res.status}`
+      );
+      return null;
+    }
+    // 404 falls through silently: "no certificate yet" is the normal case.
+  }
+
+  return count;
 }
