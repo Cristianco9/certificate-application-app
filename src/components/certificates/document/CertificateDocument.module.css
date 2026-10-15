@@ -47,6 +47,11 @@
 /* ── A single page ────────────────────────────────────────────────────────── */
 
 .page {
+  /* `position: relative` keeps any absolutely-positioned descendant (there
+     currently are none, but the counter used to live here) anchored to its
+     OWN page instead of the shared `.stage` wrapper. */
+  position: relative;
+
   width: 21.6cm;
   height: 35.6cm;
   padding: 2cm;
@@ -110,6 +115,46 @@
   letter-spacing: 0.05em;
 }
 
+/* ── Certificate number bar (every page) ─────────────────────────────────── */
+/*
+ * Grid with three columns: `1fr | auto | 1fr`. Because the outer columns
+ * have identical widths, the centre of the middle column coincides with
+ * the centre of the page — so the certificate number is centered on the
+ * document, not on the space left over between two other elements. The
+ * page counter is right-aligned in the third column.
+ */
+
+.certificateNumberBar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.certificateNumber {
+  grid-column: 2;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  margin: 0;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.pageCounter {
+  grid-column: 3;
+  justify-self: end;
+  font-size: 0.65rem;
+  color: #4b5563;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+
+.pageCounterLabel {
+  font-weight: 700;
+}
+
 /* ── Certificate title block (page 1 only) ────────────────────────────────── */
 
 .titleBlock {
@@ -118,14 +163,6 @@
   flex-direction: column;
   align-items: center;
   gap: 0.5rem;
-}
-
-.title {
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  margin: 0;
-  text-align: center;
 }
 
 .lawParagraph {
@@ -273,21 +310,6 @@
   margin: 0.15rem 0 0 0;
   font-weight: 700;
   line-height: 1.3;
-}
-
-/* ── Page counter (every page, bottom-right) ──────────────────────────────── */
-
-.pageCounter {
-  position: absolute;
-  right: 2cm;
-  top: 1cm;
-  font-size: 0.65rem;
-  color: #4b5563;
-  font-variant-numeric: tabular-nums;
-}
-
-.pageCounterLabel {
-  font-weight: 700;
 }
 
 /* ── Print ────────────────────────────────────────────────────────────────── */

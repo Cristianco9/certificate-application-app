@@ -63,8 +63,10 @@ type Props = {
  * Pagination rule: ONE PAGE PER ENROLLMENT. If the certificate covers
  * three enrollments, three pages are rendered. The first page carries the
  * student's opening sentence; the last page carries the legal footer and
- * the two signatures. Every page carries the institution header and the
- * "Página X de Y" counter.
+ * the two signatures. Every page carries:
+ *   - the institution header (letterhead),
+ *   - the document identifier bar: "CERTIFICADO N° <actNumber>" centered,
+ *     with "Página X de Y" on the same line, right-aligned.
  *
  * Screen vs print:
  *   - Screen shows only the page at `currentPageIndex`, scaled down to
@@ -206,9 +208,14 @@ function CertificatePage({
     >
       <PageHeader institution={institution} oldScale={oldScale} />
 
+      <CertificateNumberBar
+        actNumber={actNumber}
+        current={pageIndex}
+        total={totalPages}
+      />
+
       {isFirstPage && (
         <TitleBlock
-          actNumber={actNumber}
           studentFullName={fullName}
           documentNumber={student.documentNumber}
           enrollments={allEnrollments}
@@ -232,9 +239,51 @@ function CertificatePage({
       {isLastPage && (
         <CertificateFooter signers={signers} issueDate={issueDate} />
       )}
-
-      <PageCounter current={pageIndex} total={totalPages} />
     </article>
+  );
+}
+
+// ── Certificate number bar (every page) ─────────────────────────────────────
+
+/**
+ * Document-identifier bar shared by every page of the certificate.
+ *
+ * Layout:
+ *
+ *   ┌───────────────────────────────────────────────────────────┐
+ *   │                    CERTIFICADO N° 26-001      Página 1 de 3│
+ *   └───────────────────────────────────────────────────────────┘
+ *              (centered)                         (right-aligned)
+ *
+ * The certificate number is centered on the page (not centered in the
+ * leftover space between two sibling elements) because the parent grid
+ * is `1fr | auto | 1fr` — the two `1fr` columns have identical widths, so
+ * the middle column's centre is the page's centre.
+ *
+ * On page 1 this bar sits above the legal text block; on pages 2+ it sits
+ * above the enrollment table. Either way it is the first content line
+ * below the institution header, so the certificate number is visible at
+ * a glance from any page.
+ */
+function CertificateNumberBar({
+  actNumber,
+  current,
+  total,
+}: {
+  actNumber: string | null;
+  current: number;
+  total: number;
+}) {
+  return (
+    <div className={styles.certificateNumberBar}>
+      <p className={styles.certificateNumber}>
+        CERTIFICADO {actNumber ? `N° ${actNumber}` : ""}
+      </p>
+      <div className={styles.pageCounter} aria-label="Número de página">
+        <span className={styles.pageCounterLabel}>Página</span> {current} de{" "}
+        {total}
+      </div>
+    </div>
   );
 }
 
@@ -301,16 +350,22 @@ function PageHeader({
   );
 }
 
-// ── Title block (page 1) ────────────────────────────────────────────────────
+// ── Title block (page 1 only) ───────────────────────────────────────────────
 
+/**
+ * Page-1-only legal block.
+ *
+ * Note: the certificate number used to live here as a prominent title.
+ * It now lives in `CertificateNumberBar` so it can appear on every page;
+ * this block keeps only the legal information about the institution, the
+ * applicable law, and the student's opening sentence.
+ */
 function TitleBlock({
-  actNumber,
   studentFullName,
   documentNumber,
   enrollments,
   oldScale,
 }: {
-  actNumber: string | null;
   studentFullName: string;
   documentNumber: string | null;
   enrollments: EnrollmentBlock[];
@@ -353,10 +408,6 @@ function TitleBlock({
 
   return (
     <section className={styles.titleBlock}>
-      <h2 className={styles.title}>
-        CERTIFICADO {actNumber ? `N° ${actNumber}` : ""}
-      </h2>
-
       <p className={styles.lawParagraph}>
         Institución Educativa Nuestra Señora de Chiquinquirá Roldanillo Valle
         Reconocimiento por {resolutionShort} NIT: 891900837-2 DANE 176622000076
@@ -516,17 +567,6 @@ function SignatureView({
       <p className={styles.signatureRole}>
         {signer.roleLabel || fallbackRoleLabel}
       </p>
-    </div>
-  );
-}
-
-// ── Page counter ────────────────────────────────────────────────────────────
-
-function PageCounter({ current, total }: { current: number; total: number }) {
-  return (
-    <div className={styles.pageCounter} aria-label="Número de página">
-      <span className={styles.pageCounterLabel}>Página</span> {current} de{" "}
-      {total}
     </div>
   );
 }

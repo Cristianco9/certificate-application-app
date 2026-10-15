@@ -7,7 +7,6 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  FileDown,
   Loader2,
   Printer,
   Search,
@@ -16,14 +15,23 @@ import {
 
 import {
   fetchCertificateSignersAction,
+  fetchDocumentTypesAction,
   fetchInstitutionForCertificateAction,
   fetchNextActNumberAction,
   fetchStudentAcademicHistoryAction,
   fetchStudentProfileAction,
+  registerCertificateRecipientAction,
   type CertificateSigners,
+  type DocumentTypeOption,
   type InstitutionForCertificate,
 } from "@/app/certificates/actions";
 import { CertificateDocument } from "@/components/certificates/document/CertificateDocument";
+import {
+  CertificateDeliveryDialog,
+  type CertificateDeliveryFormData,
+} from "@/components/certificates/CertificateDeliveryDialog";
+import { CertificateCancelDialog } from "@/components/certificates/CertificateCancelDialog";
+import { CertificateSuccessDialog } from "@/components/certificates/CertificateSuccessDialog";
 
 import { getToken, getTokenPayload } from "@/lib/auth/token";
 import { getSelectedStudentId } from "@/lib/certificates/searchSession";
@@ -79,38 +87,71 @@ const INSTITUTION_FALLBACK: InstitutionForCertificate = {
   phones: [],
 };
 
-// ── Component ───────────────────────────────────────────────────────────────
+// ── Print helper ────────────────────────────────────────────────────────────
 
 /**
- * Certificate preview route.
+ * Opens the browser's print dialog with the certificate's own name as the
+ * suggested "Save as PDF" filename.
  *
- * Layout contract:
+ * Chrome, Firefox and Safari all read `document.title` when they build
+ * the default filename for the print-to-PDF flow. The document title is
+ * temporarily swapped to
  *
- *   ┌──────────────────────────────────────────────┐  ← <main> is exactly
- *   │  header bar                                  │    100dvh tall, and
- *   │  back link                                   │    overflow-hidden.
- *   │  toolbar                                     │    The PAGE itself
- *   │  ┌────────────────────────────────────────┐  │    never scrolls.
- *   │  │  scroll container (the ONLY scroller)   │  │
- *   │  │                                        │  │  ← This is where the
- *   │  │      [ certificate — page N ]          │  │    user scrolls to
- *   │  │                                        │  │    see the full page.
- *   │  └────────────────────────────────────────┘  │
- *   │  pagination (always visible)                 │
- *   └──────────────────────────────────────────────┘
+ *     Certificado - Académico - <actNumber>
  *
- * On a 24-inch desktop the certificate at 1:1 is wider than the container
- * it can grow into, so the horizontal fit is handled by
- * `CertificateDocument` (never wider than the viewport, never magnified
- * past 1:1). Its 35.6 cm (≈14 in) height, however, is almost always
- * taller than the visible area — that vertical overflow is absorbed by
- * the scroll container, not by the browser page.
+ * (or `Certificado - Académico - sin-número` when the act number could
+ * not be fetched) for the duration of the dialog, then restored so the
+ * browser tab does not keep the certificate name after the user closes
+ * or cancels the print dialog.
+ *
+ * The act number arrives from the backend in its canonical `YY-NNN`
+ * format (e.g. `26-001`). It is emitted verbatim — including the hyphen
+ * inside it — so the filename reads as
+ * `Certificado - Académico - 26-001`.
+ *
+ * `window.print()` is blocking in all three engines, so the restore runs
+ * right after the dialog closes. A short timeout wraps the restore as a
+ * safety net for engines that read the title on the next task instead
+ * (observed on rare Chromium builds when the PDF is actually flushed).
  */
+function printCertificate(actNumber: string | null): void {
+  const originalTitle = document.title;
+  const suffix = actNumber ?? "sin-número";
+
+  document.title = `certificado-académico-${suffix}`;
+
+  try {
+    window.print();
+  } finally {
+    window.setTimeout(() => {
+      document.title = originalTitle;
+    }, 100);
+  }
+}
+
+// ── Component ───────────────────────────────────────────────────────────────
+
 export function CertificatePreviewPage() {
   const router = useRouter();
   const [state, setState] = useState<ViewState>({ kind: "loading" });
   const [pageIndex, setPageIndex] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // ── Delivery registration state ────────────────────────────────────────
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
+  const [isSubmittingDelivery, setIsSubmittingDelivery] = useState(false);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
+
+  const [documentTypes, setDocumentTypes] = useState<DocumentTypeOption[]>([]);
+  const [isLoadingDocumentTypes, setIsLoadingDocumentTypes] = useState(false);
+
+  // ── Cancel-confirmation state ──────────────────────────────────────────
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  // ── Success-confirmation state ─────────────────────────────────────────
+  // Shown after the delivery registers successfully AND the print dialog
+  // has closed. The single "Aceptar" action routes back to /certificates.
+  const [successDialogOpen, setSuccessDialogOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -215,19 +256,166 @@ export function CertificatePreviewPage() {
     setPageIndex((i) => Math.min(totalPages - 1, i + 1));
   }
 
-  // ── Handlers ────────────────────────────────────────────────────────────
+  // ── Delivery dialog ─────────────────────────────────────────────────────
 
+  /**
+   * Opens the delivery registration dialog. Document types are fetched
+   * lazily on first open — the preview page already makes five parallel
+   * requests on mount, and the delivery catalog is only needed once the
+   * user actually commits to delivering.
+   */
+  function openDeliveryDialog() {
+    setDeliveryError(null);
+    setDeliveryOpen(true);
+
+    if (documentTypes.length === 0 && !isLoadingDocumentTypes) {
+      const token = getToken();
+      if (!token) return;
+
+      setIsLoadingDocumentTypes(true);
+      fetchDocumentTypesAction(token)
+        .then((types) => setDocumentTypes(types))
+        .finally(() => setIsLoadingDocumentTypes(false));
+    }
+  }
+
+  /**
+   * Dismiss the dialog WITHOUT leaving the preview page. Wired to the X
+   * button, Escape, and a click on the backdrop. The current certificate
+   * stays loaded, and the user can retry or navigate elsewhere.
+   */
+  function closeDeliveryDialog() {
+    if (isSubmittingDelivery) return;
+    setDeliveryOpen(false);
+    setDeliveryError(null);
+  }
+
+  /**
+   * Called when the user clicks "Cancelar" inside the delivery dialog.
+   *
+   * Opens the cancel-confirmation dialog WITHOUT closing the delivery
+   * dialog, so dismissing the confirmation returns the user to the
+   * delivery form with its data intact (guidelines §66 — the user must
+   * always be able to answer "what can I do next?").
+   *
+   * The delivery dialog stays mounted underneath (its own close path is
+   * `onClose`, not `onCancel`), and the cancel dialog is layered above
+   * it at `z-60` vs `z-50`.
+   */
+  function handleDeliveryCancel() {
+    if (isSubmittingDelivery) return;
+    setCancelDialogOpen(true);
+  }
+
+  async function handleDeliveryConfirm(data: CertificateDeliveryFormData) {
+    const token = getToken();
+    if (!token) {
+      setDeliveryError(
+        "La sesión no está disponible. Vuelve a iniciar sesión e inténtalo de nuevo."
+      );
+      return;
+    }
+
+    setIsSubmittingDelivery(true);
+    setDeliveryError(null);
+
+    // NOTE: `relationship` is accepted by the dialog but not forwarded
+    // here — see the comment on `registerCertificateRecipientAction` for
+    // why (the backend has no matching column yet).
+    const result = await registerCertificateRecipientAction(token, {
+      firstName: data.firstName,
+      middleName: data.middleName || undefined,
+      lastName: data.lastName,
+      secondLastName: data.secondLastName || undefined,
+      documentTypeId: data.documentTypeId,
+      documentNumber: data.documentNumber,
+      address: data.address,
+      phones: data.phones,
+    });
+
+    setIsSubmittingDelivery(false);
+
+    if (!result.success) {
+      setDeliveryError(result.message);
+      return;
+    }
+
+    // Success → close the delivery dialog, print, then confirm.
+    const actNumber =
+      state.kind === "ready" ? state.data.actNumber : null;
+
+    setDeliveryOpen(false);
+    setDeliveryError(null);
+
+    // The trailing 60 ms delay lets React unmount the delivery dialog
+    // before the print dialog is captured — otherwise Safari and older
+    // Chromium builds may snapshot the modal into the printed page.
+    //
+    // `window.print()` is blocking, so `setSuccessDialogOpen(true)` runs
+    // only after the user closes (or cancels) the print dialog — the
+    // success confirmation lands on top of the preview page with no
+    // modal-in-modal overlap.
+    window.setTimeout(() => {
+      printCertificate(actNumber);
+      setSuccessDialogOpen(true);
+    }, 60);
+  }
+
+  // ── Success confirmation ────────────────────────────────────────────────
+
+  /**
+   * "Aceptar" on the success dialog. The certificate flow is complete:
+   * discard the enrollment selection (so a future visit to the preview
+   * starts fresh) and route back to the search page. The search session
+   * itself is NOT cleared — the user's filters and result rows stay
+   * intact, so they return to exactly where they left off.
+   */
+  function handleSuccessAccept() {
+    setSuccessDialogOpen(false);
+    clearSelectedEnrollments();
+    router.replace("/certificates");
+  }
+
+  // ── Cancel confirmation ─────────────────────────────────────────────────
+
+  /**
+   * Toolbar "Cancelar" → open the confirmation dialog rather than
+   * redirecting immediately. A generated certificate represents an
+   * institutional document, and the enrollment selection behind it may
+   * have taken several minutes to assemble — silently discarding it on
+   * a single click is far too easy to trigger by accident.
+   */
   function handleCancel() {
+    setCancelDialogOpen(true);
+  }
+
+  /**
+   * Dismiss the confirmation. The user keeps their place:
+   *   - Opened from the toolbar  → back to the preview page.
+   *   - Opened from the delivery dialog → the delivery form is still
+   *     mounted underneath, with its filled data intact.
+   */
+  function handleCancelDialogClose() {
+    setCancelDialogOpen(false);
+  }
+
+  /**
+   * Confirm the cancellation. Closes any open dialogs, discards the
+   * enrollment selection, and routes to the dashboard — the exact
+   * behavior the toolbar's "Cancelar" button used to have.
+   */
+  function handleCancelDialogConfirm() {
+    setCancelDialogOpen(false);
+    setDeliveryOpen(false);
+    setDeliveryError(null);
     clearSelectedEnrollments();
     router.replace("/dashboard");
   }
 
-  function handlePrint() {
-    window.print();
-  }
+  // ── Toolbar handlers ────────────────────────────────────────────────────
 
-  function handleDownload() {
-    /* no-op — button disabled until the backend generates a PDF */
+  function handlePrint() {
+    openDeliveryDialog();
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -295,7 +483,6 @@ export function CertificatePreviewPage() {
                 actNumber={state.data.actNumber}
                 totalPages={totalPages}
                 onPrint={handlePrint}
-                onDownload={handleDownload}
                 onCancel={handleCancel}
               />
             </div>
@@ -350,6 +537,51 @@ export function CertificatePreviewPage() {
           </>
         )}
       </div>
+
+      {/*
+       * Delivery registration modal — the print action only fires after
+       * the recipient has been registered against the API.
+       *
+       * Two distinct exits:
+       *   - onClose  → dismiss this dialog, keep the preview open
+       *   - onCancel → open the cancel-confirmation on top. This dialog
+       *                stays mounted underneath, so dismissing the
+       *                confirmation returns the user to their filled
+       *                delivery form.
+       */}
+      <CertificateDeliveryDialog
+        open={deliveryOpen}
+        documentTypes={documentTypes}
+        isLoadingDocumentTypes={isLoadingDocumentTypes}
+        isSubmitting={isSubmittingDelivery}
+        serverError={deliveryError}
+        onClose={closeDeliveryDialog}
+        onCancel={handleDeliveryCancel}
+        onConfirm={handleDeliveryConfirm}
+      />
+
+      {/*
+       * Cancel-confirmation modal. Layered above the delivery dialog
+       * (z-60 vs z-50) so it can appear on top of it. Dismissing returns
+       * the user to whatever they were doing; confirming clears the
+       * enrollment selection and routes to /dashboard.
+       */}
+      <CertificateCancelDialog
+        open={cancelDialogOpen}
+        onClose={handleCancelDialogClose}
+        onConfirm={handleCancelDialogConfirm}
+      />
+
+      {/*
+       * Success-confirmation modal. Layered above both of the above
+       * (z-70). Not dismissable by backdrop, Escape, or X — the only
+       * path forward is "Aceptar", which routes to /certificates so the
+       * user can search for the next student.
+       */}
+      <CertificateSuccessDialog
+        open={successDialogOpen}
+        onAccept={handleSuccessAccept}
+      />
     </main>
   );
 }
@@ -360,13 +592,11 @@ function Toolbar({
   actNumber,
   totalPages,
   onPrint,
-  onDownload,
   onCancel,
 }: {
   actNumber: string | null;
   totalPages: number;
   onPrint: () => void;
-  onDownload: () => void;
   onCancel: () => void;
 }) {
   return (
@@ -392,13 +622,6 @@ function Toolbar({
 
       <div className="flex flex-wrap items-center gap-2">
         <ToolbarButton icon={Printer} label="Imprimir" onClick={onPrint} />
-        <ToolbarButton
-          icon={FileDown}
-          label="Descargar PDF"
-          onClick={onDownload}
-          disabled
-          title="Disponible cuando se implemente la generación del PDF en el servidor"
-        />
         <ToolbarButton
           icon={X}
           label="Cancelar"

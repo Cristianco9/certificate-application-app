@@ -728,7 +728,379 @@ export async function fetchNextActNumberAction(
   }
 }
 
+// ── Certificate recipient registration (delivery flow) ─────────────────────
+//
+// Called from the delivery-registration dialog on the preview page when
+// the user confirms the recipient. Performs a three-step backend dance
+// that the current API forces us into, because neither of the create
+// endpoints returns the newly-assigned id:
+//
+//   1. POST /certificate-recipients/create
+//      → 409 if the recipient already exists (treated as success, since
+//      documentNumber is UNIQUE and re-registering the same person is
+//      a legitimate reprint scenario).
+//   2. POST /certificate-recipients/get-by-document-number
+//      → resolves the recipient's id.
+//   3. For each phone:
+//        a. POST /phones/get-by-number → 404 means "not yet in catalog"
+//        b. POST /phones/create        → 409 tolerated (race)
+//        c. POST /phones/get-by-number → resolve the phone's id
+//        d. POST /certificate-recipient-phones/create → link
+//           (409 tolerated ONLY when the phone is already linked to THIS
+//           recipient — a 409 caused by a different owner is surfaced
+//           as a real error; see isPhoneLinkedToRecipient below)
+//
+// NOTE on `relationship`: the mockup shows a "Parentesco o relación"
+// field, but `receptor_certificado` has no matching column and the Joi
+// schema rejects unknown keys by omission. The field is accepted in the
+// UI for parity with the wireframe but is NOT sent here — a silent
+// drop is better than a 400. When the backend grows a
+// `relacion_receptor_certificado` column, forward it in step 1.
+//
+// NOTE on certificate linking: `PATCH /certificates/update` accepts a
+// `recipientId`, but no certificate row exists yet at preview time — the
+// preview page only shows a *previewed* act number. Wire this once
+// certificate creation is implemented in the generation step.
+
+export type RegisterCertificateRecipientInput = {
+  firstName: string;
+  middleName?: string;
+  lastName: string;
+  secondLastName?: string;
+  documentTypeId: string;
+  documentNumber: string;
+  address: string;
+  /** One or more phone numbers. Empty strings are dropped. */
+  phones: string[];
+};
+
+export type RegisterCertificateRecipientResult =
+  | { success: true; recipientId: number }
+  | { success: false; message: string };
+
+const RECIPIENT_ERROR_MESSAGES = {
+  generic:
+    "No se pudo registrar el receptor del certificado. Inténtelo de nuevo.",
+  fetchRecipient:
+    "El receptor fue creado, pero no pudimos recuperar su identificador.",
+  fetchPhone: (number: string) =>
+    `No pudimos recuperar el identificador del teléfono ${number}.`,
+  linkPhone: (number: string) =>
+    `No pudimos vincular el teléfono ${number} al receptor.`,
+  forbiddenPhoneLookup:
+    "Tu rol no tiene permiso para consultar el catálogo de teléfonos. " +
+    "Contacta al administrador del sistema para completar el registro.",
+  phoneOwnedByOther: (number: string) =>
+    `El teléfono ${number} ya está vinculado a otro registro ` +
+    `(usuario, estudiante, institución o receptor). ` +
+    `Desvincúlalo primero o usa un número distinto.`,
+  system:
+    "El sistema está experimentando problemas. Por favor, inténtelo de nuevo más tarde.",
+} as const;
+
+export async function registerCertificateRecipientAction(
+  token: string,
+  input: RegisterCertificateRecipientInput
+): Promise<RegisterCertificateRecipientResult> {
+  if (!API_URL || !API_KEY || !token) {
+    return { success: false, message: RECIPIENT_ERROR_MESSAGES.system };
+  }
+
+  const authHeaders = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    apikey: API_KEY,
+    Authorization: `Bearer ${token}`,
+  };
+
+  try {
+    // ── 1. Create recipient (409 = already exists → OK) ────────────────
+    const createRes = await fetch(`${API_URL}/certificate-recipients/create`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        firstName: input.firstName,
+        middleName: input.middleName ?? "",
+        lastName: input.lastName,
+        secondLastName: input.secondLastName ?? "",
+        documentTypeId: input.documentTypeId,
+        documentNumber: input.documentNumber,
+        address: input.address,
+      }),
+      cache: "no-store",
+    });
+
+    if (!createRes.ok && createRes.status !== 409) {
+      return { success: false, message: RECIPIENT_ERROR_MESSAGES.generic };
+    }
+
+    // ── 2. Resolve recipient id ────────────────────────────────────────
+    const getRes = await fetch(
+      `${API_URL}/certificate-recipients/get-by-document-number`,
+      {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ documentNumber: input.documentNumber }),
+        cache: "no-store",
+      }
+    );
+
+    if (!getRes.ok) {
+      return { success: false, message: RECIPIENT_ERROR_MESSAGES.fetchRecipient };
+    }
+
+    const getBody = (await getRes.json()) as {
+      certificateRecipient?: { id: number };
+    };
+    const recipientId = getBody.certificateRecipient?.id;
+
+    if (typeof recipientId !== "number") {
+      return { success: false, message: RECIPIENT_ERROR_MESSAGES.fetchRecipient };
+    }
+
+    // ── 3. Create + link each phone ────────────────────────────────────
+    //
+    // The `resolveOrCreatePhoneId` helper returns a discriminated union
+    // so each failure mode gets a message that actually describes what
+    // went wrong, instead of the one-size-fits-all "no pudimos recuperar
+    // el identificador del teléfono":
+    //
+    //   • "forbidden" → the session's role cannot read the phone
+    //                   catalog. The backend's role allow-list on
+    //                   POST /phones/get-by-number must include the
+    //                   delivery roles; until then, the user gets a
+    //                   message telling them to contact the admin.
+    //   • "failed"    → transient error (network, 5xx, malformed body).
+    //                   Retrying helps.
+    //
+    // The 409 from the link call is disambiguated via
+    // `isPhoneLinkedToRecipient`:
+    //
+    //   • already linked to THIS recipient → silent success
+    //   • linked to a different owner      → real error, surfaced
+    //   • anything else                    → generic link error
+    for (const raw of input.phones) {
+      const number = raw.trim();
+      if (!number) continue;
+
+      const resolved = await resolveOrCreatePhoneId(
+        authHeaders,
+        number,
+        API_URL
+      );
+
+      if (resolved.kind === "forbidden") {
+        return {
+          success: false,
+          message: RECIPIENT_ERROR_MESSAGES.forbiddenPhoneLookup,
+        };
+      }
+
+      if (resolved.kind === "failed") {
+        return {
+          success: false,
+          message: RECIPIENT_ERROR_MESSAGES.fetchPhone(number),
+        };
+      }
+
+      const linkRes = await fetch(
+        `${API_URL}/certificate-recipient-phones/create`,
+        {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({
+            certificateRecipientId: String(recipientId),
+            phoneId: String(resolved.phoneId),
+          }),
+          cache: "no-store",
+        }
+      );
+
+      if (linkRes.ok) {
+        // First-time link — done with this phone.
+        continue;
+      }
+
+      if (linkRes.status === 409) {
+        const alreadyLinked = await isPhoneLinkedToRecipient(
+          authHeaders,
+          API_URL,
+          recipientId,
+          resolved.phoneId
+        );
+
+        if (alreadyLinked) {
+          // The phone was already ours from a previous delivery. Nothing
+          // more to do — a legitimate no-op, not a failure.
+          continue;
+        }
+
+        // The phone exists but belongs to a DIFFERENT owner (another
+        // recipient, or a User / Student / Institution via the
+        // cross-bridge ownership rule). The current recipient cannot
+        // claim it until that other owner releases it.
+        return {
+          success: false,
+          message: RECIPIENT_ERROR_MESSAGES.phoneOwnedByOther(number),
+        };
+      }
+
+      return {
+        success: false,
+        message: RECIPIENT_ERROR_MESSAGES.linkPhone(number),
+      };
+    }
+
+    return { success: true, recipientId };
+  } catch {
+    return { success: false, message: RECIPIENT_ERROR_MESSAGES.system };
+  }
+}
+
 // ── Internal helpers ────────────────────────────────────────────────────────
+
+/**
+ * Resolves a phone number to its catalog id, creating the phone first
+ * if it doesn't exist yet.
+ *
+ * Returns a discriminated union so the caller can produce a message that
+ * matches the actual failure:
+ *
+ *   • { kind: "ok", phoneId }  → phone exists (or was created), id known
+ *   • { kind: "forbidden" }    → the current session's role cannot read
+ *                                the phone catalog. The backend's role
+ *                                allow-list on POST /phones/get-by-number
+ *                                must include the delivery roles (Rector,
+ *                                Secretario); see routes/phoneRouter.js.
+ *   • { kind: "failed" }       → transient error (network, 5xx, malformed
+ *                                response). Retrying helps.
+ *
+ * The lookup → create → lookup dance is required because
+ * `POST /phones/create` does not return the newly-assigned id, and there
+ * is no other read endpoint the delivery roles can reach. A 409 on the
+ * create call is tolerated: it means the phone was inserted between our
+ * lookup and our create (typically by a prior delivery request, or a
+ * concurrent one), and the second lookup resolves the id either way.
+ */
+async function resolveOrCreatePhoneId(
+  authHeaders: Record<string, string>,
+  number: string,
+  apiUrl: string
+): Promise<
+  | { kind: "ok"; phoneId: number }
+  | { kind: "forbidden" }
+  | { kind: "failed" }
+> {
+  const lookup = async (): Promise<
+    | { kind: "ok"; phoneId: number }
+    | { kind: "not-found" }
+    | { kind: "forbidden" }
+    | { kind: "failed" }
+  > => {
+    const res = await fetch(`${apiUrl}/phones/get-by-number`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ number }),
+      cache: "no-store",
+    });
+
+    if (res.status === 403) return { kind: "forbidden" };
+    if (res.status === 404) return { kind: "not-found" };
+    if (!res.ok) return { kind: "failed" };
+
+    const body = (await res.json()) as { phone?: { id: number } };
+    return typeof body.phone?.id === "number"
+      ? { kind: "ok", phoneId: body.phone.id }
+      : { kind: "failed" };
+  };
+
+  // First lookup: is the phone already in the catalog?
+  const first = await lookup();
+  if (first.kind === "ok") return first;
+  if (first.kind === "forbidden") return first;
+
+  // Not found (or transient error) → try to create it. A 409 means the
+  // phone was created between our lookup and our create — likely by a
+  // previous delivery request, or a concurrent one. Either way, re-fetch
+  // to resolve the id.
+  const createRes = await fetch(`${apiUrl}/phones/create`, {
+    method: "POST",
+    headers: authHeaders,
+    body: JSON.stringify({ number }),
+    cache: "no-store",
+  });
+
+  if (createRes.status === 403) return { kind: "forbidden" };
+  if (!createRes.ok && createRes.status !== 409) return { kind: "failed" };
+
+  const second = await lookup();
+  if (second.kind === "ok") return second;
+  if (second.kind === "forbidden") return second;
+
+  return { kind: "failed" };
+}
+
+/**
+ * Returns `true` if `phoneId` is already among the phones linked to
+ * `recipientId`.
+ *
+ * Used to disambiguate a 409 from
+ * `POST /certificate-recipient-phones/create`: the endpoint returns the
+ * same status when (a) the link already exists (fine) and when (b) the
+ * phone belongs to a different owner (real conflict). Only (a) should be
+ * swallowed as success — otherwise the dialog reports success while the
+ * phone is silently left unlinked from the newly-registered recipient.
+ *
+ * `get-by-certificate-recipient` is reachable by every role that can
+ * register a delivery (Máster / Administrador / Rector / Secretario),
+ * which is why we use it instead of the singular
+ * `get-by-certificate-recipient-and-phone` (admin-only). The list is
+ * small — one row per phone linked to one recipient — so the O(n) scan
+ * is fine.
+ *
+ * Failure semantics: on any error (non-2xx, malformed body, network
+ * failure) we return `false`. That deliberately biases the caller
+ * toward treating the 409 as a real conflict rather than a silent
+ * success. A false negative is far safer here — the user is told to
+ * intervene instead of being told the phone was registered when it
+ * wasn't.
+ */
+async function isPhoneLinkedToRecipient(
+  authHeaders: Record<string, string>,
+  apiUrl: string,
+  recipientId: number,
+  phoneId: number
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${apiUrl}/certificate-recipient-phones/get-by-certificate-recipient`,
+      {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          certificateRecipientId: String(recipientId),
+        }),
+        cache: "no-store",
+      }
+    );
+
+    if (!res.ok) return false;
+
+    const body = (await res.json()) as {
+      certificateRecipientPhones?: Array<{
+        phone?: { id: number } | null;
+      }>;
+    };
+
+    if (!Array.isArray(body.certificateRecipientPhones)) return false;
+
+    return body.certificateRecipientPhones.some(
+      (link) => link.phone?.id === phoneId
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Counts how many of the given enrollments already have a certificate
