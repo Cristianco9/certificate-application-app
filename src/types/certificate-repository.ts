@@ -5,6 +5,16 @@ export type CertificateRepositoryStudent = {
   firstLastName: string;
   secondLastName: string | null;
   documentNumber: string | null;
+  /**
+   * Document type catalog reference.
+   *
+   * OPTIONAL: the certificate's enrollment include on the backend
+   * deliberately drops this field (see `CertificateServices.ENROLLMENTS_INCLUDE`
+   * → `Student.attributes`). It is populated ONLY when
+   * `fetchCertificateDetailAction` fetches the student separately via
+   * `/students/list-one` to enrich the detail page.
+   */
+  documentType?: { id: number; name: string } | null;
 };
 
 export type CertificateRepositoryGroup = {
@@ -35,11 +45,25 @@ export type CertificateRepositoryRow = {
   id: number;
   actNumber: string;
   issueDate: string;
-  status: 'EMITIDO' | 'ANULADO' | 'REIMPRESO';
+  status: "EMITIDO" | "ANULADO" | "REIMPRESO";
   issuer: { id: number; firstName: string; lastName: string } | null;
   institution: { id: number; name: string } | null;
   recipient: CertificateRepositoryRecipient | null;
   enrollments: CertificateRepositoryEnrollment[];
+  /**
+   * MySQL timestamps (`fecha_creacion` / `fecha_modificacion`),
+   * serialized as UTC ISO strings by Sequelize's `toJSON()`. Always
+   * render them through `@/lib/format/datetime` so the wall-clock time
+   * the institution saw is preserved.
+   *
+   * The backend does NOT persist a dedicated delivery date: in the
+   * current issuance flow, delivery happens at the same moment the
+   * certificate is persisted (register recipient → create certificate
+   * → print → success). `createdAt` is therefore a faithful proxy for
+   * "when the certificate was handed over".
+   */
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type CertificateRepositoryFilters = {
@@ -54,26 +78,26 @@ export type CertificateRepositoryFilters = {
   year: string;
   gradeId: string | null;
   group: string | null;
-  jornada: 'Diurna' | 'Nocturna' | null;
+  jornada: "Diurna" | "Nocturna" | null;
   issuerId: string | null;
   recipientName: string;
 };
 
 export const EMPTY_REPOSITORY_FILTERS: CertificateRepositoryFilters = {
-  actNumber: '',
-  firstName: '',
-  secondName: '',
-  firstLastName: '',
-  secondLastName: '',
-  documentNumber: '',
+  actNumber: "",
+  firstName: "",
+  secondName: "",
+  firstLastName: "",
+  secondLastName: "",
+  documentNumber: "",
   documentTypeId: null,
-  birthDate: '',
-  year: '',
+  birthDate: "",
+  year: "",
   gradeId: null,
   group: null,
   jornada: null,
   issuerId: null,
-  recipientName: '',
+  recipientName: "",
 };
 
 export const REPOSITORY_PAGE_SIZE = 20;
@@ -89,7 +113,7 @@ export function toRepositoryRequestFilters(
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(filters)) {
     if (value === null || value === undefined) continue;
-    if (typeof value === 'string' && value.trim() === '') continue;
+    if (typeof value === "string" && value.trim() === "") continue;
     out[key] = String(value);
   }
   return out;
@@ -110,21 +134,6 @@ export function pickPrimaryEnrollment(
   certificate: CertificateRepositoryRow
 ): CertificateRepositoryEnrollment | null {
   return certificate.enrollments[0] ?? null;
-}
-
-/** Full legal name in "first middle firstLast secondLast" order. */
-export function formatStudentName(
-  student: CertificateRepositoryStudent | null
-): string {
-  if (!student) return '—';
-  return [
-    student.firstName,
-    student.middleName,
-    student.firstLastName,
-    student.secondLastName,
-  ]
-    .filter(Boolean)
-    .join(' ');
 }
 
 /**
@@ -184,10 +193,25 @@ export function collectDistinctGradeNames(
   return names;
 }
 
+/** Full legal name in "first middle firstLast secondLast" order. */
+export function formatStudentName(
+  student: CertificateRepositoryStudent | null
+): string {
+  if (!student) return "—";
+  return [
+    student.firstName,
+    student.middleName,
+    student.firstLastName,
+    student.secondLastName,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function formatRecipientName(
   recipient: CertificateRepositoryRecipient | null
 ): string {
-  if (!recipient) return '—';
+  if (!recipient) return "—";
   return [
     recipient.firstName,
     recipient.middleName,
@@ -195,22 +219,22 @@ export function formatRecipientName(
     recipient.secondLastName,
   ]
     .filter(Boolean)
-    .join(' ');
+    .join(" ");
 }
 
 export function formatIssuerName(
   issuer: { firstName: string; lastName: string } | null
 ): string {
-  if (!issuer) return '—';
+  if (!issuer) return "—";
   return `${issuer.firstName} ${issuer.lastName}`.trim();
 }
 
 export function formatGradeGroup(
   enrollment: CertificateRepositoryEnrollment | null
 ): string {
-  if (!enrollment?.group) return '—';
+  if (!enrollment?.group) return "—";
   const grade = enrollment.group.grade?.name;
   const group = enrollment.group.name;
   if (grade && group) return `${grade} / ${group}`;
-  return grade ?? group ?? '—';
+  return grade ?? group ?? "—";
 }
