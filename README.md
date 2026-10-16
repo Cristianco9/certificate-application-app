@@ -84,24 +84,6 @@ This frontend provides the user interface for the centralized system, which must
 
 ## Architecture
 
-```text
-┌──────────────────────────────┐
-│     Next.js Frontend (this)  │
-│  UI · navigation · forms ·   │
-│  client validation · feedback│
-└──────────────┬───────────────┘
-               │  HTTP / JSON
-               ▼
-┌──────────────────────────────┐
-│    REST API (Express 5)      │
-│ business rules · auth · RBAC │
-│ certificates · persistence · │
-│ audit                        │
-└──────────────┬───────────────┘
-               ▼
-      Relational DB · File storage
-```
-
 Layered component flow:
 
 ```text
@@ -190,46 +172,6 @@ Only variables that are safe to expose to the browser may use the `NEXT_PUBLIC_`
 | `npm run lint` | Run ESLint. |
 
 Before opening a pull request, run `npm run lint` and make sure `npm run build` succeeds (TypeScript must compile in strict mode).
-
----
-
-## Project Structure
-
-Target structure (see `guidelines.md` for the full conventions):
-
-```text
-src/
-├── app/
-│   ├── (auth)/
-│   │   └── login/
-│   ├── (dashboard)/
-│   │   ├── layout.tsx
-│   │   ├── dashboard/
-│   │   ├── students/
-│   │   ├── certificates/
-│   │   ├── repository/
-│   │   ├── users/
-│   │   └── database/
-│   └── layout.tsx
-├── components/
-│   ├── ui/              # shadcn/ui primitives
-│   ├── layout/          # sidebar, header, app shell
-│   ├── dashboard/
-│   ├── students/
-│   ├── certificates/    # preview + print CSS Modules
-│   ├── repository/
-│   ├── users/
-│   └── database/
-├── hooks/               # useAuth, useStudents, useCertificates...
-├── services/            # api.ts and *.service.ts (single place for HTTP calls)
-├── schemas/             # Zod schemas
-├── types/               # API and domain types
-├── lib/                 # api client, error handling, formatting
-├── constants/           # roles, certificate status, academic constants
-└── styles/
-```
-
-Organization is by **domain** (students, certificates, repository, users, database) rather than only by technical type, so developers and AI agents can navigate quickly.
 
 ---
 
