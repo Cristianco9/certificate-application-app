@@ -19,6 +19,8 @@ type Props = {
   hasSearched: boolean;
   onClearFilters: () => void;
   onOpenFilters: () => void;
+  /** Navigate to the certificate's detail page. */
+  onSelectRow: (row: CertificateRepositoryRow) => void;
 };
 
 const SKELETON_ROWS = 6;
@@ -30,16 +32,8 @@ const SKELETON_ROWS = 6;
  *   Certificado · Nombre completo · Expedido por · Documento ·
  *   Grados / matrículas · Recibido por
  *
- * La columna "Grados / matrículas" reemplaza las antiguas columnas
- * "Año de grado" y "Grado / grupo". En lugar de mostrar la información
- * de UNA sola matrícula (la primera del array), resume cuántos grados
- * distintos y cuántas matrículas cubre el certificado completo — que es
- * la información relevante cuando un mismo acta abarca varias
- * matrículas.
- *
- * `hasSearched` distingue "el operador aún no ha lanzado ninguna
- * consulta" (placeholder rows) de "la consulta no devolvió nada"
- * (estado vacío).
+ * Rows are clickable: `onSelectRow` fires with the row data so the
+ * parent can hand the certificate id to the detail page.
  */
 export function CertificateRepositoryTable({
   rows,
@@ -47,6 +41,7 @@ export function CertificateRepositoryTable({
   hasSearched,
   onClearFilters,
   onOpenFilters,
+  onSelectRow,
 }: Props) {
   const isEmpty = hasSearched && !isLoading && rows.length === 0;
 
@@ -92,7 +87,9 @@ export function CertificateRepositoryTable({
                 onOpenFilters={onOpenFilters}
               />
             ) : rows.length > 0 ? (
-              rows.map((row) => <ResultRow key={row.id} row={row} />)
+              rows.map((row) => (
+                <ResultRow key={row.id} row={row} onSelect={onSelectRow} />
+              ))
             ) : (
               <PlaceholderRows />
             )}
@@ -124,16 +121,42 @@ function Th({
   );
 }
 
-function ResultRow({ row }: { row: CertificateRepositoryRow }) {
-  // Todas las matrículas de un certificado pertenecen al mismo estudiante
-  // en la práctica, así que tomamos la primera para extraer el nombre y
-  // el documento — igual que antes.
+function ResultRow({
+  row,
+  onSelect,
+}: {
+  row: CertificateRepositoryRow;
+  onSelect: (row: CertificateRepositoryRow) => void;
+}) {
   const enrollment = pickPrimaryEnrollment(row);
   const studentName = formatStudentName(enrollment?.student ?? null);
   const documentNumber = enrollment?.student?.documentNumber ?? "—";
 
+  function handleSelect() {
+    onSelect(row);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTableRowElement>) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handleSelect();
+    }
+  }
+
   return (
-    <tr className="border-b border-gray-100 transition-colors last:border-b-0 hover:bg-[#EAF1FC]">
+    <tr
+      tabIndex={0}
+      onClick={handleSelect}
+      onKeyDown={handleKeyDown}
+      aria-label={`Ver detalle del certificado ${row.actNumber}`}
+      className="
+        group cursor-pointer border-b border-gray-100 transition-colors
+        last:border-b-0
+        hover:bg-[#EAF1FC]
+        focus-visible:bg-[#EAF1FC] focus-visible:outline-none
+        focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#3B5FC7]/40
+      "
+    >
       <td className="px-4 py-3.5">
         <span className="font-mono text-sm font-bold tabular-nums text-[#2861C4]">
           {row.actNumber}
@@ -169,14 +192,16 @@ function ResultRow({ row }: { row: CertificateRepositoryRow }) {
 /**
  * Cobertura del certificado: cuántos grados y cuántas matrículas cubre.
  *
- * - Badge azul: número de GRADOS distintos.
- * - Línea inferior: número total de MATRÍCULAS.
- * - `title` sobre toda la celda: nombres de los grados (tooltip), para
- *   que el operador sepa qué grados están involucrados sin abrir el
- *   certificado.
+ * Ambos contadores van en línea, uno al lado del otro:
+ *   [ 3 grados ]  ·  3 matrículas
  *
- * Cuando el certificado no tiene matrículas (dato roto o certificado
- * creado sin enlaces), mostramos un texto gris en lugar del badge.
+ * - Badge azul: número de GRADOS distintos.
+ * - Texto gris: número total de MATRÍCULAS.
+ * - Separador "·" entre ambos.
+ * - `title` sobre toda la celda: nombres de los grados (tooltip).
+ *
+ * Cuando el certificado no tiene matrículas mostramos un texto gris
+ * en lugar de los badges.
  */
 function CoverageCell({ row }: { row: CertificateRepositoryRow }) {
   const enrollmentCount = countEnrollments(row);

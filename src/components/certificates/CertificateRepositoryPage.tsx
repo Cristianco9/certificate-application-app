@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Filter, RotateCcw } from "lucide-react";
 
 import { fetchCertificatesRepositoryAction } from "@/app/certificates/actions";
@@ -8,6 +9,7 @@ import { CertificateRepositoryFiltersDialog } from "@/components/certificates/Ce
 import { CertificateRepositoryTable } from "@/components/certificates/CertificateRepositoryTable";
 
 import { getToken } from "@/lib/auth/token";
+import { setSelectedCertificateId } from "@/lib/certificates/repositorySession";
 
 import {
   EMPTY_REPOSITORY_FILTERS,
@@ -21,6 +23,8 @@ const TOTAL_PAGE = (total: number, size: number) =>
   Math.max(1, Math.ceil(total / size));
 
 export function CertificateRepositoryPage() {
+  const router = useRouter();
+
   const [filters, setFilters] = useState<CertificateRepositoryFilters>(
     EMPTY_REPOSITORY_FILTERS
   );
@@ -33,7 +37,10 @@ export function CertificateRepositoryPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
 
-  async function load(pageNumber: number, currentFilters: CertificateRepositoryFilters) {
+  async function load(
+    pageNumber: number,
+    currentFilters: CertificateRepositoryFilters
+  ) {
     const token = getToken();
     if (!token) {
       setRows([]);
@@ -84,6 +91,18 @@ export function CertificateRepositoryPage() {
     load(nextPage, appliedFilters);
   }
 
+  /**
+   * Row click → detail page.
+   *
+   * The certificate id is handed off through sessionStorage so it never
+   * appears in the URL (see `@/lib/certificates/repositorySession`). The
+   * detail page reads it back on mount.
+   */
+  function handleSelectRow(row: CertificateRepositoryRow) {
+    setSelectedCertificateId(row.id);
+    router.push("/repository/certificate");
+  }
+
   const totalPages = TOTAL_PAGE(total, REPOSITORY_PAGE_SIZE);
   const filtersActive =
     toRepositoryRequestFilters(filters) &&
@@ -118,7 +137,10 @@ export function CertificateRepositoryPage() {
             <Filter className="h-4 w-4" aria-hidden="true" />
             Filtros de búsqueda
             {filtersActive && (
-              <span aria-hidden="true" className="ml-1 h-2 w-2 rounded-full bg-white/90" />
+              <span
+                aria-hidden="true"
+                className="ml-1 h-2 w-2 rounded-full bg-white/90"
+              />
             )}
           </button>
           <button
@@ -145,6 +167,7 @@ export function CertificateRepositoryPage() {
           hasSearched={hasSearched}
           onClearFilters={handleClear}
           onOpenFilters={() => setFiltersOpen(true)}
+          onSelectRow={handleSelectRow}
         />
 
         {total > REPOSITORY_PAGE_SIZE && (
