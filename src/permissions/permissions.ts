@@ -198,7 +198,6 @@ export const ROLE_PERMISSIONS: Record<BackendRole, readonly Permission[]> = {
     // Navigation.
     PERMISSIONS.NAV_ACADEMIC_REGISTRY,
     PERMISSIONS.NAV_STUDENTS,
-    PERMISSIONS.NAV_REPOSITORY,
 
     // Students — read + create + update (not delete).
     PERMISSIONS.STUDENTS_READ,
