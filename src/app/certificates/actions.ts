@@ -1,6 +1,7 @@
 "use server";
 
 import type { EnrollmentEntry } from "@/types/certificate-search";
+import type { CertificateRepositoryRow } from "@/types/certificate-repository";
 
 // `.trim()` guards against a leading/trailing space in the .env file.
 const API_URL = process.env.API_URL?.trim() ?? "";
@@ -130,20 +131,6 @@ export async function searchStudentsAction(
 }
 
 // ── Student profile ─────────────────────────────────────────────────────────
-//
-// Backing endpoints for the profile page:
-//   1. POST /students/list-one              → personal data (REQUIRED)
-//   2. POST /enrollments/get-by-student     → enrollment list
-//   3. POST /student-phones/get-by-student  → phone numbers
-//   4. POST /certificates/get-by-enrollment → certificate count (fan-out)
-//
-// Calls 2–4 are non-fatal: if any fails, the profile still renders with
-// whatever data was retrieved. Call 3 is gated on the backend by
-// `checkRole(['Máster', 'Administrador', 'Auxiliar'])` on
-// `/student-phones/get-by-student`. When the current session's role is
-// `Secretario` or `Rector`, that call returns 403 and `phones` stays `[]`.
-// The failure is captured in `phoneFetchStatus` and surfaced to the UI so
-// the phone field can explain *why* it's empty instead of just showing "—".
 
 export type StudentProfileData = {
   id: number;
@@ -162,27 +149,10 @@ export type StudentProfileData = {
 
 export type StudentProfile = {
   student: StudentProfileData;
-  /** Phone numbers, in the order returned by the backend. */
   phones: string[];
-  /**
-   * HTTP status of the /student-phones/get-by-student call:
-   *   200 → phones fetched successfully (may still be an empty array)
-   *   403 → the session's role is not in ['Máster','Administrador','Auxiliar']
-   *   404 → route renamed
-   *   0   → network error / server unreachable
-   */
   phoneFetchStatus: number;
   enrollmentCount: number;
   lastEnrollmentYear: number | null;
-  /**
-   * Number of certificates already issued for this student, derived from
-   * POST /certificates/get-by-enrollment per enrollment.
-   *
-   * `null` means the count could not be trusted — one of the underlying
-   * calls returned a status other than 200 / 404 (403 role mismatch,
-   * 5xx, or network failure). The UI renders "—" in that case rather
-   * than a misleading partial number.
-   */
   certificateCount: number | null;
 };
 
@@ -244,8 +214,6 @@ export async function fetchStudentProfileAction(
   if (!studentBody.student) return null;
 
   // ── 2. Enrollments + phones in parallel ─────────────────────────────
-  // `Promise.allSettled` (not `Promise.all`) so a network error on one
-  // call never blocks the other from contributing data.
   const [enrollmentOutcome, phoneOutcome] = await Promise.allSettled([
     fetch(`${API_URL}/enrollments/get-by-student`, {
       method: "POST",
@@ -274,9 +242,6 @@ export async function fetchStudentProfileAction(
         if (Array.isArray(body.enrollments)) {
           enrollmentCount = body.enrollments.length;
           for (const e of body.enrollments) {
-            // Collect the id for the certificate-count fan-out below.
-            // Guard against a malformed row so a bad record doesn't
-            // poison the whole list.
             if (typeof e.id === "number") {
               enrollmentIds.push(e.id);
             }
@@ -331,9 +296,6 @@ export async function fetchStudentProfileAction(
         );
       }
     } else {
-      // Most likely 403 if the current session role is Secretario or Rector
-      // (both can reach /certificates but neither is in the phone route's
-      // checkRole allow-list). See the frontend note above the function.
       console.warn(
         `[fetchStudentProfileAction] student-phones/get-by-student for ${studentId} → ${res.status}`
       );
@@ -346,13 +308,6 @@ export async function fetchStudentProfileAction(
   }
 
   // ── Certificates ─────────────────────────────────────────────────────
-  // One certificate per enrollment is no longer the rule: a certificate
-  // now covers one OR MANY enrollments through the 'certificado_matricula'
-  // bridge table. The bridge still enforces UNIQUE on id_matricula, so an
-  // enrollment belongs to at most one certificate. Counting certificates
-  // for a student therefore still reduces to "how many of this student's
-  // enrollments are linked to a certificate", which is what
-  // `countCertificatesForEnrollments` measures.
   const certificateCount = await countCertificatesForEnrollments(
     API_URL,
     authHeaders,
@@ -370,12 +325,6 @@ export async function fetchStudentProfileAction(
 }
 
 // ── Academic history (for the certificate-generation view) ─────────────────
-//
-// Backing endpoint: POST /students/get-academic-history
-// Returns a flat list of score rows; each row carries its own enrollment
-// id plus the year / grade / group / subject it belongs to. The UI groups
-// these by enrollmentId to build the enrollment selector and the per-
-// enrollment scores table.
 
 export type AcademicHistoryRow = {
   year: number | null;
@@ -422,23 +371,6 @@ export async function fetchStudentAcademicHistoryAction(
 }
 
 // ── Institution (certificate header) ────────────────────────────────────────
-//
-// Backing endpoints:
-//   POST /institutions/list-one               → name, NIT, DANE code, ...
-//   POST /institution-phones/get-by-institution → phone list
-//
-// The institution id is fixed for this deployment — the system serves a
-// single institution, so id "1" is hard-coded. Multi-institution support
-// would turn this into a config value.
-//
-// Fields the API does not carry yet (resolutions, website, "SEDE Principal")
-// live in `@/lib/certificates/institutionConfig`.
-//
-// NOTE ON AUTHORIZATION: `/institutions/list-one` currently accepts only
-// `['Máster', 'Administrador']`. Until the backend widens it to include
-// `Rector` and `Secretario` (the two other roles that can reach
-// `/certificates`), this call returns 403 for those roles. The preview
-// page handles that gracefully — see `CertificatePreviewPage.tsx`.
 
 const INSTITUTION_ID = "1";
 
@@ -450,7 +382,6 @@ export type InstitutionForCertificate = {
   email: string;
   nitId: string;
   municipality: { id: number; name: string } | null;
-  /** Phone numbers registered in `institucion_telefono`. */
   phones: string[];
 };
 
@@ -517,7 +448,6 @@ export async function fetchInstitutionForCertificateAction(
   }
   if (!institutionBody.institution) return null;
 
-  // Phones are best-effort — a failing phone call must not blank the header.
   let phones: string[] = [];
   if (phoneOutcome.status === "fulfilled" && phoneOutcome.value.ok) {
     try {
@@ -537,46 +467,13 @@ export async function fetchInstitutionForCertificateAction(
 }
 
 // ── Certificate signers ─────────────────────────────────────────────────────
-//
-// A signed certificate carries two signatures: the issuer (the current
-// session's user) and the institution's rector.
-//
-// Both come from POST /users/get-signer-candidates, which returns only
-// the fields the certificate needs (name, document, role, municipality,
-// academic level) and only users whose role is one of Rector /
-// Secretario / Administrador. It is reachable by every role that can
-// reach /certificates, unlike /users/list-all which is admin-only.
-//
-// The `municipality` object carries a nested `department` because
-// Colombian identity documents are issued by "City - Department"
-// (`de Roldanillo - Valle del Cauca`), and the certificate prints both.
-//
-// The `academicLevel` object carries the abbreviation (e.g. "Mgs",
-// "Esp", "Ph.D") used to prefix the signer's name.
-//
-// When the certificate-generation endpoint lands and starts writing
-// `firma_certificado` rows, replace this lookup with a read of that
-// table — the returned `CertificateSigner` shape stays the same.
 
 export type CertificateSigner = {
   fullName: string;
-  /** Abbreviated document type, e.g. "c.c" / "T.I" / "Pasaporte". */
   documentTypeAbbr: string;
   documentNumber: string;
-  /**
-   * City and department where the document was issued, already joined
-   * with " - " (e.g. "Roldanillo - Valle del Cauca"). Empty when the
-   * signer has no municipality registered.
-   */
   documentCity: string;
-  /**
-   * Academic-level abbreviation from the `nivel_academico` ENUM
-   * (e.g. "Téc", "Tgo", "Lic", "Esp", "Mgs", "Ph.D"). Empty string when
-   * the signer has no academic level registered — the UI then renders
-   * just the name without a prefix.
-   */
   academicLevelAbbr: string;
-  /** Raw role name from the DB, e.g. "Rector" / "Secretario". */
   roleLabel: string;
 };
 
@@ -594,7 +491,6 @@ type SignerCandidateShape = {
   municipality: {
     id: number;
     name: string;
-    /** Present only if the backend includes the nested department. */
     department?: { id: number; name: string } | null;
   } | null;
   academicLevel: {
@@ -628,8 +524,6 @@ function buildSigner(user: SignerCandidateShape): CertificateSigner {
   const city = user.municipality?.name ?? "";
   const department = user.municipality?.department?.name ?? "";
 
-  // "Roldanillo - Valle del Cauca" when both are present;
-  // whichever one exists when only one is; "" when neither.
   const cityAndDepartment =
     city && department ? `${city} - ${department}` : city || department;
 
@@ -689,17 +583,6 @@ export async function fetchCertificateSignersAction(
 }
 
 // ── Certificate act-number preview ──────────────────────────────────────────
-//
-// Backing endpoint: GET /certificates/next-act-number
-// Returns the act number that WOULD be assigned to the next certificate
-// created today, WITHOUT creating it — the service only reads the highest
-// existing consecutive for the current year and increments it. Safe to
-// call on every preview mount.
-//
-// NOTE: this number is a preview only. The authoritative number is the
-// one returned by `registerCertificatesAction` after the certificate is
-// actually persisted. The two can differ if another user issues a
-// certificate between the preview and the confirmation.
 
 type NextActNumberApiBody = {
   actNumber?: unknown;
@@ -737,35 +620,12 @@ export async function fetchNextActNumberAction(
 }
 
 // ── Certificate creation (persist the record) ──────────────────────────────
-//
-// Backing endpoint: POST /certificates/create
-//
-// ONE certificate covers ONE OR MANY enrollments. The certificate row is
-// inserted into `certificado` and each enrollment is linked through the
-// bridge table `certificado_matricula` inside a single transaction:
-// either the whole group is committed or nothing is.
-//
-// The bridge enforces UNIQUE on `id_matricula`, so an enrollment can
-// belong to AT MOST ONE certificate. A retry that tries to re-link an
-// already-linked enrollment will fail with 409 (conflict), which we
-// surface to the user instead of silently succeeding — the batch can't
-// be idempotently resolved when only some enrollments are already taken.
-//
-// The act number ('YY-NNN') is generated server-side and covers the
-// WHOLE certificate, so a single number is returned for the whole batch.
-// The preview document renders it on every page via its fallback logic
-// (`actNumbers[index] ?? firstActNumber`).
-//
-// `issueDate` is sent as `YYYY-MM-DD`, matching the backend's DATEONLY
-// column and its `Joi.date()` validator.
 
 export type RegisterCertificatesInput = {
   userId: string;
   institutionId: string;
-  /** One or more enrollment ids — the certificate's full scope. */
   enrollmentIds: number[];
   recipientId: number;
-  /** `YYYY-MM-DD` in the institution's timezone. */
   issueDate: string;
 };
 
@@ -823,18 +683,12 @@ export async function registerCertificatesAction(
         issueDate: input.issueDate,
         userId: input.userId,
         institutionId: input.institutionId,
-        // ONE certificate → MANY enrollments, linked through
-        // `certificado_matricula`. The backend rejects this call with a
-        // 400 if any enrollment is missing from the array or has a bad
-        // shape — see `certificateSchema.newCertificateData`.
         enrollmentIds: input.enrollmentIds.map(String),
         recipientId: String(input.recipientId),
-        // status omitted → backend defaults to 'EMITIDO'
       }),
       cache: "no-store",
     });
 
-    // ── 401 — session expired or revoked ──────────────────────────
     if (res.status === 401) {
       return {
         success: false,
@@ -843,7 +697,6 @@ export async function registerCertificatesAction(
       };
     }
 
-    // ── 403 — role not allowed to issue certificates ──────────────
     if (res.status === 403) {
       return {
         success: false,
@@ -852,11 +705,6 @@ export async function registerCertificatesAction(
       };
     }
 
-    // ── 409 — one of the enrollments already has a certificate ────
-    // The bridge enforces UNIQUE on id_matricula; the service rejects
-    // the whole batch with a conflict when any enrollment is already
-    // linked, so the transaction stays atomic and no partial certificate
-    // is written.
     if (res.status === 409) {
       return {
         success: false,
@@ -865,7 +713,6 @@ export async function registerCertificatesAction(
       };
     }
 
-    // ── Any other non-2xx ─────────────────────────────────────────
     if (!res.ok) {
       let serverMessage: string | null = null;
       try {
@@ -889,7 +736,6 @@ export async function registerCertificatesAction(
       };
     }
 
-    // ── 201 — parse the act number ────────────────────────────────
     const body = (await res.json()) as { actNumber?: unknown };
 
     if (typeof body.actNumber !== "string" || body.actNumber.length === 0) {
@@ -904,9 +750,6 @@ export async function registerCertificatesAction(
       };
     }
 
-    // A single act number covers every page of this certificate. The
-    // `CertificateDocument` fallback (`actNumbers[index] ?? firstActNumber`)
-    // renders it on each page, so a one-element array is the correct shape.
     return { success: true, actNumbers: [body.actNumber] };
   } catch (error) {
     console.warn("[registerCertificatesAction] request failed:", error);
@@ -919,36 +762,6 @@ export async function registerCertificatesAction(
 }
 
 // ── Certificate recipient registration (delivery flow) ─────────────────────
-//
-// Called from the delivery-registration dialog on the preview page when
-// the user confirms the recipient. Performs a three-step backend dance
-// that the current API forces us into, because neither of the create
-// endpoints returns the newly-assigned id:
-//
-//   1. POST /certificate-recipients/create
-//        → 201 if the recipient was newly created.
-//        → 200 if a recipient with the same document number already
-//          existed AND its critical identification fields (firstName,
-//          lastName, documentTypeId, documentNumber, relationship)
-//          matched. The backend updates the stored address with the
-//          one submitted and returns success.
-//        → 409 if a recipient with the same document number exists but
-//          its critical fields DO NOT match — a data-entry conflict
-//          the operator must resolve. Surface this as a hard error.
-//   2. POST /certificate-recipients/get-by-document-number
-//        → resolves the recipient's id (both 200 and 201 paths need it).
-//   3. For each phone:
-//        a. POST /phones/get-by-number → 404 means "not yet in catalog"
-//        b. POST /phones/create        → 409 tolerated (race)
-//        c. POST /phones/get-by-number → resolve the phone's id
-//        d. POST /certificate-recipient-phones/create → link
-//           (409 tolerated ONLY when the phone is already linked to THIS
-//           recipient — a 409 caused by a different owner is surfaced
-//           as a real error; see isPhoneLinkedToRecipient below)
-//
-// The `relationship` field IS forwarded now: it is one of the critical
-// identification fields the backend uses to decide whether a returning
-// recipient is the same person, so it must travel with the payload.
 
 export type RegisterCertificateRecipientInput = {
   firstName: string;
@@ -959,7 +772,6 @@ export type RegisterCertificateRecipientInput = {
   documentNumber: string;
   relationship: string;
   address: string;
-  /** One or more phone numbers. Empty strings are dropped. */
   phones: string[];
 };
 
@@ -991,12 +803,6 @@ const RECIPIENT_ERROR_MESSAGES = {
     "El sistema está experimentando problemas. Por favor, inténtelo de nuevo más tarde.",
 } as const;
 
-/**
- * Reads the server's `message` field from a non-2xx response body.
- * Returns `null` when the body is missing, not JSON, or has no string
- * `message` — so the caller can fall back to a generic string without
- * having to special-case every failure mode.
- */
 async function readServerMessage(res: Response): Promise<string | null> {
   try {
     const body = (await res.json()) as { message?: unknown };
@@ -1024,11 +830,6 @@ export async function registerCertificateRecipientAction(
   };
 
   try {
-    // ── 1. Create-or-update recipient ──────────────────────────────────
-    // The backend decides between create and update based on the stored
-    // document number. A 200 response means "existing recipient with
-    // matching identity — address refreshed"; a 201 means "new recipient".
-    // Both are successful.
     const createRes = await fetch(`${API_URL}/certificate-recipients/create`, {
       method: "POST",
       headers: authHeaders,
@@ -1045,13 +846,6 @@ export async function registerCertificateRecipientAction(
       cache: "no-store",
     });
 
-    // ── Non-2xx handling ─────────────────────────────────────────────
-    // Every failure branch now attempts to surface the server's own
-    // `message` — a Boom error payload carries a specific, user-actionable
-    // string (e.g. "document type does not exist", "recipient identity
-    // mismatch"), which is strictly more useful than the generic
-    // fallback. Falls back to the generic string only when the body
-    // isn't JSON or has no message.
     if (!createRes.ok) {
       const serverMessage = await readServerMessage(createRes);
 
@@ -1060,11 +854,6 @@ export async function registerCertificateRecipientAction(
         serverMessage
       );
 
-      // 409 → a recipient with this document number already exists but
-      // their stored identity does not match what was submitted. This
-      // is a data-entry conflict the operator must resolve. Prefer the
-      // server's message when available, since the backend's wording is
-      // the one that names the mismatched fields.
       if (createRes.status === 409) {
         return {
           success: false,
@@ -1072,9 +861,6 @@ export async function registerCertificateRecipientAction(
         };
       }
 
-      // 401 → the session expired between the preview page load and this
-      // call. Surface the session-expired copy so the user knows to log
-      // in again rather than retrying the same form.
       if (createRes.status === 401) {
         return {
           success: false,
@@ -1083,11 +869,6 @@ export async function registerCertificateRecipientAction(
         };
       }
 
-      // 403 → the role is not allowed to create recipients. Theoretically
-      // unreachable here because the /certificates route already gates on
-      // role, but the backend independently enforces authorization — a
-      // role change mid-session or a token tampering attempt would land
-      // here.
       if (createRes.status === 403) {
         return {
           success: false,
@@ -1103,7 +884,6 @@ export async function registerCertificateRecipientAction(
       };
     }
 
-    // ── 2. Resolve recipient id ────────────────────────────────────────
     const getRes = await fetch(
       `${API_URL}/certificate-recipients/get-by-document-number`,
       {
@@ -1138,7 +918,6 @@ export async function registerCertificateRecipientAction(
       };
     }
 
-    // ── 3. Create + link each phone ────────────────────────────────────
     for (const raw of input.phones) {
       const number = raw.trim();
       if (!number) continue;
@@ -1217,19 +996,6 @@ export async function registerCertificateRecipientAction(
 
 // ── Internal helpers ────────────────────────────────────────────────────────
 
-/**
- * Resolves a phone number to its catalog id, creating the phone first
- * if it doesn't exist yet.
- *
- * Returns a discriminated union so the caller can produce a message that
- * matches the actual failure:
- *
- *   • { kind: "ok", phoneId }  → phone exists (or was created), id known
- *   • { kind: "forbidden" }    → the current session's role cannot read
- *                                the phone catalog.
- *   • { kind: "failed" }       → transient error (network, 5xx, malformed
- *                                response). Retrying helps.
- */
 async function resolveOrCreatePhoneId(
   authHeaders: Record<string, string>,
   number: string,
@@ -1283,14 +1049,6 @@ async function resolveOrCreatePhoneId(
   return { kind: "failed" };
 }
 
-/**
- * Returns `true` if `phoneId` is already among the phones linked to
- * `recipientId`.
- *
- * Failure semantics: on any error (non-2xx, malformed body, network
- * failure) we return `false` — deliberately biased toward treating the
- * 409 as a real conflict rather than a silent success.
- */
 async function isPhoneLinkedToRecipient(
   authHeaders: Record<string, string>,
   apiUrl: string,
@@ -1328,21 +1086,6 @@ async function isPhoneLinkedToRecipient(
   }
 }
 
-/**
- * Counts how many of the given enrollments already have a certificate
- * issued for them.
- *
- * Backing endpoint: POST /certificates/get-by-enrollment
- * Because the bridge table enforces UNIQUE on `id_matricula`, at most
- * one certificate can ever own a given enrollment — a 200 means "this
- * enrollment is certified", a 404 means "not yet".
- *
- * Failure semantics:
- *   - A 404 is counted as "no certificate" and does NOT poison the
- *     total — it is the normal state for an enrollment that has not
- *     yet been certified.
- *   - Any other non-2xx status collapses the whole result to `null`.
- */
 async function countCertificatesForEnrollments(
   apiUrl: string,
   authHeaders: Record<string, string>,
@@ -1388,17 +1131,6 @@ async function countCertificatesForEnrollments(
 }
 
 // ── Certificate repository (paginated listing with filters) ────────────────
-//
-// Backing endpoint: POST /certificates/list-paginated
-// Returns one page of certificates plus the total count, so the pager
-// can render "Página X de Y" without a second round trip.
-//
-// The backend enforces offset/limit (1..100) and matches the JWT role
-// against ['Máster', 'Administrador', 'Rector', 'Secretario'].
-
-import type {
-  CertificateRepositoryRow,
-} from "@/types/certificate-repository";
 
 export type CertificateRepositoryApiPage = {
   total: number;
@@ -1465,4 +1197,308 @@ export async function fetchCertificatesRepositoryAction(
     );
     return empty;
   }
+}
+
+// ── Certificate detail (repository → detail page) ─────────────────────────
+//
+// Backing endpoints, all called in parallel where possible:
+//   1. POST /certificates/list-one                     → certificate + enrollments + student
+//   2. POST /groups/list-one                           → group.shift (jornada) enrichment
+//   3. POST /students/list-one                         → student.documentType enrichment
+//   4. POST /certificate-recipients/list-one           → recipient detail
+//   5. POST /certificate-recipient-phones/get-by-...   → recipient phones
+//
+// Calls 2–5 are best-effort: if any of them fails, the page still renders
+// with the data the certificate already carries. Two fields REQUIRE an
+// extra call because the certificate's own include deliberately drops
+// them:
+//
+//   • `student.documentType` — dropped by `CertificateServices.ENROLLMENTS_INCLUDE`
+//     (see `Student.attributes`).
+//   • `group.shift` (jornada) — dropped by the same include
+//     (see `Group.attributes`). The `listForRepository` query DOES include
+//     it, but `listOne` does not — hence this enrichment.
+//
+// The backend DOES NOT persist a dedicated delivery date. `createdAt` on
+// the certificate is used as the delivery moment, which is accurate in
+// the current issuance flow (recipient is registered → certificate is
+// created → print → success). See the type comment on
+// `CertificateRepositoryRow.createdAt` for details.
+
+export type RecipientDetail = {
+  id: number;
+  firstName: string;
+  middleName: string | null;
+  lastName: string;
+  secondLastName: string | null;
+  documentNumber: string;
+  documentType: { id: number; name: string } | null;
+  relationship: string | null;
+  address: string | null;
+};
+
+export type CertificateDetail = {
+  certificate: CertificateRepositoryRow;
+  recipientDetail: RecipientDetail | null;
+  recipientPhones: string[];
+};
+
+export async function fetchCertificateDetailAction(
+  token: string,
+  certificateId: string
+): Promise<CertificateDetail | null> {
+  if (!API_URL || !API_KEY || !token || !certificateId) return null;
+
+  const authHeaders = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    apikey: API_KEY,
+    Authorization: `Bearer ${token}`,
+  };
+
+  // ── 1. Certificate ──────────────────────────────────────────────────
+  let certificate: CertificateRepositoryRow | null = null;
+  try {
+    const res = await fetch(`${API_URL}/certificates/list-one`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ id: certificateId }),
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      console.warn(
+        `[fetchCertificateDetailAction] certificates/list-one for ${certificateId} → ${res.status}`
+      );
+      return null;
+    }
+
+    const body = (await res.json()) as {
+      certificate?: CertificateRepositoryRow;
+    };
+    certificate = body.certificate ?? null;
+  } catch (error) {
+    console.warn(
+      "[fetchCertificateDetailAction] certificates/list-one failed:",
+      error
+    );
+    return null;
+  }
+
+  if (!certificate) return null;
+
+  // ── 2. Enrichment (best-effort, parallel) ───────────────────────────
+  //
+  // Every one of these is optional: a failure on any of them leaves the
+  // page renderable with the data the certificate already carries. The
+  // two fields that REQUIRE an extra call are documented above.
+  const primaryEnrollment = certificate.enrollments[0] ?? null;
+  const studentId = primaryEnrollment?.student?.id ?? null;
+  const recipientId = certificate.recipient?.id ?? null;
+
+  // Enrollments whose group lacks `shift` — need a `/groups/list-one`
+  // lookup. We capture the enrollment index so we can merge the response
+  // back into the right row later.
+  const enrollmentsMissingShift = certificate.enrollments
+    .map((enrollment, index) => ({
+      index,
+      groupId: enrollment.group?.id,
+      hasShift: enrollment.group?.shift != null,
+    }))
+    .filter(
+      (entry): entry is { index: number; groupId: number; hasShift: false } =>
+        typeof entry.groupId === "number" && !entry.hasShift
+    );
+
+  // Build the parallel task list. Indices are remembered so we can map
+  // each settled result back to its purpose after `allSettled`.
+  const tasks: Array<Promise<Response>> = [];
+
+  const studentTaskIndex = studentId !== null ? tasks.length : -1;
+  if (studentId !== null) {
+    tasks.push(
+      fetch(`${API_URL}/students/list-one`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ id: String(studentId) }),
+        cache: "no-store",
+      })
+    );
+  }
+
+  const recipientDetailTaskIndex = recipientId !== null ? tasks.length : -1;
+  if (recipientId !== null) {
+    tasks.push(
+      fetch(`${API_URL}/certificate-recipients/list-one`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ id: String(recipientId) }),
+        cache: "no-store",
+      })
+    );
+  }
+
+  const recipientPhonesTaskIndex = recipientId !== null ? tasks.length : -1;
+  if (recipientId !== null) {
+    tasks.push(
+      fetch(
+        `${API_URL}/certificate-recipient-phones/get-by-certificate-recipient`,
+        {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({ certificateRecipientId: String(recipientId) }),
+          cache: "no-store",
+        }
+      )
+    );
+  }
+
+  // One `/groups/list-one` task per enrollment missing its shift.
+  const groupTaskIndices = enrollmentsMissingShift.map(({ groupId }) => {
+    const idx = tasks.length;
+    tasks.push(
+      fetch(`${API_URL}/groups/list-one`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ id: String(groupId) }),
+        cache: "no-store",
+      })
+    );
+    return idx;
+  });
+
+  const settled = await Promise.allSettled(tasks);
+
+  let studentDocumentType: { id: number; name: string } | null = null;
+  let recipientDetail: RecipientDetail | null = null;
+  let recipientPhones: string[] = [];
+  const shiftByEnrollmentIndex = new Map<number, string>();
+
+  // ── Student document type ───────────────────────────────────────────
+  if (studentTaskIndex >= 0) {
+    const res = settled[studentTaskIndex];
+    if (res.status === "fulfilled" && res.value.ok) {
+      try {
+        const body = (await res.value.json()) as {
+          student?: {
+            documentType?: { id: number; name: string } | null;
+          };
+        };
+        studentDocumentType = body.student?.documentType ?? null;
+      } catch {
+        /* keep null */
+      }
+    } else if (res.status === "fulfilled") {
+      console.warn(
+        `[fetchCertificateDetailAction] students/list-one for ${studentId} → ${res.value.status}`
+      );
+    }
+  }
+
+  // ── Recipient detail ────────────────────────────────────────────────
+  if (recipientDetailTaskIndex >= 0) {
+    const res = settled[recipientDetailTaskIndex];
+    if (res.status === "fulfilled" && res.value.ok) {
+      try {
+        const body = (await res.value.json()) as {
+          certificateRecipient?: RecipientDetail;
+        };
+        recipientDetail = body.certificateRecipient ?? null;
+      } catch {
+        /* keep null */
+      }
+    }
+  }
+
+  // ── Recipient phones ────────────────────────────────────────────────
+  if (recipientPhonesTaskIndex >= 0) {
+    const res = settled[recipientPhonesTaskIndex];
+    if (res.status === "fulfilled" && res.value.ok) {
+      try {
+        const body = (await res.value.json()) as {
+          certificateRecipientPhones?: Array<{
+            phone?: { id: number; number: string } | null;
+          }>;
+        };
+        if (Array.isArray(body.certificateRecipientPhones)) {
+          recipientPhones = body.certificateRecipientPhones
+            .map((link) => link.phone?.number)
+            .filter(
+              (n): n is string => typeof n === "string" && n.length > 0
+            );
+        }
+      } catch {
+        /* keep empty */
+      }
+    }
+  }
+
+  // ── Group shifts (jornada) ──────────────────────────────────────────
+  // Each settled response corresponds to one missing-shift enrollment.
+  // We store the resolved `shift` keyed by the enrollment index so the
+  // merge step below can reconstruct the enrollments array in order.
+  for (let i = 0; i < enrollmentsMissingShift.length; i++) {
+    const taskIdx = groupTaskIndices[i];
+    const res = settled[taskIdx];
+    if (res.status !== "fulfilled" || !res.value.ok) {
+      if (res.status === "fulfilled") {
+        console.warn(
+          `[fetchCertificateDetailAction] groups/list-one for ${enrollmentsMissingShift[i].groupId} → ${res.value.status}`
+        );
+      }
+      continue;
+    }
+    try {
+      const body = (await res.value.json()) as {
+        group?: { shift?: string | null };
+      };
+      const shift = body.group?.shift;
+      if (typeof shift === "string" && shift.length > 0) {
+        shiftByEnrollmentIndex.set(
+          enrollmentsMissingShift[i].index,
+          shift
+        );
+      }
+    } catch {
+      /* keep null */
+    }
+  }
+
+  // ── Merge shifts back into the enrollments array ────────────────────
+  if (shiftByEnrollmentIndex.size > 0) {
+    certificate = {
+      ...certificate,
+      enrollments: certificate.enrollments.map((enrollment, index) => {
+        const shift = shiftByEnrollmentIndex.get(index);
+        if (!shift || !enrollment.group) return enrollment;
+        return {
+          ...enrollment,
+          group: { ...enrollment.group, shift },
+        };
+      }),
+    };
+  }
+
+  // ── Attach the resolved document type onto the primary enrollment ──
+  // Mutating the first enrollment is the cleanest way to surface the
+  // enriched field through the existing `CertificateRepositoryRow`
+  // shape, without adding a parallel "studentDetail" object to
+  // `CertificateDetail` just for one field.
+  if (studentDocumentType && certificate.enrollments.length > 0) {
+    const [first, ...rest] = certificate.enrollments;
+    certificate = {
+      ...certificate,
+      enrollments: [
+        {
+          ...first,
+          student: first.student
+            ? { ...first.student, documentType: studentDocumentType }
+            : null,
+        },
+        ...rest,
+      ],
+    };
+  }
+
+  return { certificate, recipientDetail, recipientPhones };
 }
