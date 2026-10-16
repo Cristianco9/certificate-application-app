@@ -30,12 +30,6 @@ const PX_PER_CM = 96 / 2.54;
 
 /**
  * `useLayoutEffect` on the client, `useEffect` during SSR.
- *
- * `CertificateDocument` only ever mounts after the preview page's data
- * fetch resolves (inside a `useEffect`), so this always runs client-side
- * and the layout effect fires before the first paint — no flash of an
- * unscaled page. The alias keeps the linter quiet and stays correct if
- * this component is ever moved into an SSR-rendered branch.
  */
 const useIsomorphicLayoutEffect =
   typeof window !== "undefined" ? useLayoutEffect : useEffect;
@@ -43,7 +37,19 @@ const useIsomorphicLayoutEffect =
 // ── Props ──────────────────────────────────────────────────────────────────
 
 type Props = {
-  actNumber: string | null;
+  /**
+   * One act number per page (enrollment). Index 0 corresponds to page 1.
+   *
+   * During the preview phase this array only contains a single previewed
+   * number — the pages fall back to it so the user sees an approximation.
+   * After the delivery flow runs `registerCertificatesAction`, the array
+   * is replaced with the real numbers, one per enrollment, and each page
+   * prints its own.
+   *
+   * May contain `null` entries when a number could not be resolved; the
+   * fallback chain handles that (page → array[0] → null).
+   */
+  actNumbers: (string | null)[];
   student: CertificateSearchStudent;
   institution: InstitutionForCertificate;
   enrollments: EnrollmentBlock[];
@@ -60,27 +66,18 @@ type Props = {
 /**
  * Renders the certificate as an Oficio-sized page.
  *
- * Pagination rule: ONE PAGE PER ENROLLMENT. If the certificate covers
- * three enrollments, three pages are rendered. The first page carries the
+ * Pagination rule: ONE PAGE PER ENROLLMENT. The first page carries the
  * student's opening sentence; the last page carries the legal footer and
  * the two signatures. Every page carries:
  *   - the institution header (letterhead),
  *   - the document identifier bar: "CERTIFICADO N° <actNumber>" centered,
  *     with "Página X de Y" on the same line, right-aligned.
  *
- * Screen vs print:
- *   - Screen shows only the page at `currentPageIndex`, scaled down to
- *     fit the available width (never scaled up past 1:1).
- *   - Print renders every page at its true physical size, one per sheet.
- *
  * SCORING SYSTEM: the certificate's legal text is chosen based on the
- * scoring system the scores belong to (see `isOldScale`):
- *   • 1–10 numeric  → pre-2000 system, cites Resolución 71/1977 and 2729/1974
- *   • 1–5 numeric or alphabetic → modern, cites Resolución 4999/2014
- *     and Decreto 1290/2009
+ * scoring system the scores belong to (see `isOldScale`).
  */
 export function CertificateDocument({
-  actNumber,
+  actNumbers,
   student,
   institution,
   enrollments,
@@ -91,9 +88,6 @@ export function CertificateDocument({
   const viewportRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
 
-  // Recompute the display scale whenever the viewport resizes. Runs
-  // before paint on the initial mount, so the user never sees the
-  // certificate at 1:1 on a narrow screen.
   useIsomorphicLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -105,7 +99,6 @@ export function CertificateDocument({
       const available = viewport.clientWidth - paddingX;
       const pageWidthPx = PAGE_WIDTH_CM * PX_PER_CM;
 
-      // Clamp to 1 so we never magnify on a wide desktop screen.
       const next = Math.min(1, available / pageWidthPx);
       setScale(next > 0 ? next : 1);
     };
@@ -117,18 +110,17 @@ export function CertificateDocument({
     return () => ro.disconnect();
   }, []);
 
-  // Computed once at the top level and threaded down — the same scale
-  // governs every page of the certificate, since all enrollments belong
-  // to the same student and use a consistent scoring system.
   const oldScale = isOldScale(enrollments);
 
   const pages: Array<EnrollmentBlock | null> =
     enrollments.length > 0 ? enrollments : [null];
   const totalPages = pages.length;
 
-  // Defensive clamp — the caller is expected to pass a valid index, but
-  // this component should never throw if it doesn't.
   const safeIndex = Math.min(Math.max(currentPageIndex, 0), totalPages - 1);
+
+  // First known number — used as the fallback when the caller has not
+  // yet expanded `actNumbers` to one entry per page (preview phase).
+  const firstActNumber = actNumbers[0] ?? null;
 
   return (
     <div ref={viewportRef} className={styles.viewport}>
@@ -156,7 +148,9 @@ export function CertificateDocument({
               student={student}
               institution={institution}
               signers={signers}
-              actNumber={actNumber}
+              // Per-page number when known; otherwise the first known
+              // number (preview phase) so every page still renders one.
+              actNumber={actNumbers[index] ?? firstActNumber}
               issueDate={issueDate}
               oldScale={oldScale}
             />
@@ -186,7 +180,6 @@ function CertificatePage({
 }: {
   pageIndex: number;
   totalPages: number;
-  /** `true` for the page the user is currently viewing (screen only). */
   isCurrent: boolean;
   isFirstPage: boolean;
   isLastPage: boolean;
@@ -245,26 +238,6 @@ function CertificatePage({
 
 // ── Certificate number bar (every page) ─────────────────────────────────────
 
-/**
- * Document-identifier bar shared by every page of the certificate.
- *
- * Layout:
- *
- *   ┌───────────────────────────────────────────────────────────┐
- *   │                    CERTIFICADO N° 26-001      Página 1 de 3│
- *   └───────────────────────────────────────────────────────────┘
- *              (centered)                         (right-aligned)
- *
- * The certificate number is centered on the page (not centered in the
- * leftover space between two sibling elements) because the parent grid
- * is `1fr | auto | 1fr` — the two `1fr` columns have identical widths, so
- * the middle column's centre is the page's centre.
- *
- * On page 1 this bar sits above the legal text block; on pages 2+ it sits
- * above the enrollment table. Either way it is the first content line
- * below the institution header, so the certificate number is visible at
- * a glance from any page.
- */
 function CertificateNumberBar({
   actNumber,
   current,
@@ -304,8 +277,6 @@ function PageHeader({
     departmentName,
   } = INSTITUTION_STATIC_CONFIG;
 
-  // The resolution cited in the header's middle column reflects the
-  // scoring system the certificate is being issued under.
   const resolutionLine = oldScale
     ? resolutionLineOld
     : resolutionLineModern;
@@ -352,14 +323,6 @@ function PageHeader({
 
 // ── Title block (page 1 only) ───────────────────────────────────────────────
 
-/**
- * Page-1-only legal block.
- *
- * Note: the certificate number used to live here as a prominent title.
- * It now lives in `CertificateNumberBar` so it can appear on every page;
- * this block keeps only the legal information about the institution, the
- * applicable law, and the student's opening sentence.
- */
 function TitleBlock({
   studentFullName,
   documentNumber,
@@ -378,10 +341,6 @@ function TitleBlock({
     decreeLineOld,
   } = INSTITUTION_STATIC_CONFIG;
 
-  // Legal text swaps wholesale with the scoring system. The modern
-  // variant cites Resolución 4999/2014 and Decreto 1290/2009; the old
-  // one cites Resolución 71/1977 and Resolución 2729/1974 — mirroring
-  // the wording on certificates issued before the 2009 reform.
   const resolutionShort = oldScale
     ? resolutionShortOld
     : resolutionShortModern;
@@ -395,8 +354,6 @@ function TitleBlock({
 
   const isSingle = enrollments.length === 1;
 
-  // Document clause: gracefully handle the "no document on record" case
-  // for historical students (the schema explicitly allows null).
   const documentClause = documentNumber ? (
     <>
       , identificada con documento número{" "}
@@ -466,10 +423,6 @@ function EnrollmentTableView({
             </tr>
           ) : (
             enrollment.subjects.map((row, index) => {
-              // In the schema, a score is EITHER numeric OR alphabetic,
-              // never both. DEF shows the number when the score is
-              // NUMERICA; Valoración shows the alphabetic label when it
-              // is ALFABETICA. Only one of the two ever carries a value.
               const isNumeric = row.scoreType === "NUMERICA";
 
               return (
@@ -552,9 +505,6 @@ function SignatureView({
     <div className={styles.signature}>
       <div className={styles.signatureLine} />
 
-      {/* Academic-level abbreviation prefixes the name when present,
-          e.g. "Mgs. Juan Pérez", "Esp. María Gómez". The abbreviation
-          is rendered exactly as stored in the `nivel_academico` ENUM. */}
       <p className={styles.signatureName}>
         {signer.academicLevelAbbr && `${signer.academicLevelAbbr} `}
         {signer.fullName}

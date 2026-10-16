@@ -21,6 +21,7 @@ import {
   fetchStudentAcademicHistoryAction,
   fetchStudentProfileAction,
   registerCertificateRecipientAction,
+  registerCertificatesAction,
   type CertificateSigners,
   type DocumentTypeOption,
   type InstitutionForCertificate,
@@ -50,7 +51,14 @@ import type { CertificateSearchStudent } from "@/types/certificate-search";
 // ── View state ──────────────────────────────────────────────────────────────
 
 type CertificateData = {
-  actNumber: string | null;
+  /**
+   * Act numbers, one per selected enrollment. During the initial preview
+   * this array only contains a single entry (the *previewed* next number
+   * from `GET /certificates/next-act-number`); the document falls back to
+   * that entry for every page. After the delivery flow persists the
+   * certificates, this array is replaced with the real per-page numbers.
+   */
+  actNumbers: (string | null)[];
   student: CertificateSearchStudent;
   institution: InstitutionForCertificate;
   enrollments: EnrollmentBlock[];
@@ -68,14 +76,6 @@ type ViewState =
 //
 // TEMPORARY — remove once `/institutions/list-one` allows `Secretario`
 // and `Rector` (see backend note in `@/app/certificates/actions`).
-//
-// Today `/institutions/list-one` returns 403 for those two roles, so the
-// preview would otherwise refuse to render. This placeholder keeps the
-// layout reviewable while the backend authorization is being widened.
-//
-// The placeholder is CLEARLY marked "—" so nobody mistakes a printed
-// preview for a valid certificate. Once the backend edit lands, delete
-// this constant and restore the `missing-data` branch below.
 const INSTITUTION_FALLBACK: InstitutionForCertificate = {
   id: 0,
   name: "Institución",
@@ -87,7 +87,24 @@ const INSTITUTION_FALLBACK: InstitutionForCertificate = {
   phones: [],
 };
 
-// ── Print helper ────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Long-form Spanish date, formatted as `YYYY-MM-DD` for the backend's
+ * DATEONLY column, computed in the institution's timezone.
+ */
+function toIsoDate(now: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
 
 /**
  * Opens the browser's print dialog with the certificate's own name as the
@@ -95,24 +112,8 @@ const INSTITUTION_FALLBACK: InstitutionForCertificate = {
  *
  * Chrome, Firefox and Safari all read `document.title` when they build
  * the default filename for the print-to-PDF flow. The document title is
- * temporarily swapped to
- *
- *     Certificado - Académico - <actNumber>
- *
- * (or `Certificado - Académico - sin-número` when the act number could
- * not be fetched) for the duration of the dialog, then restored so the
- * browser tab does not keep the certificate name after the user closes
- * or cancels the print dialog.
- *
- * The act number arrives from the backend in its canonical `YY-NNN`
- * format (e.g. `26-001`). It is emitted verbatim — including the hyphen
- * inside it — so the filename reads as
- * `Certificado - Académico - 26-001`.
- *
- * `window.print()` is blocking in all three engines, so the restore runs
- * right after the dialog closes. A short timeout wraps the restore as a
- * safety net for engines that read the title on the next task instead
- * (observed on rare Chromium builds when the PDF is actually flushed).
+ * temporarily swapped to `certificado-académico-<actNumber>` for the
+ * duration of the dialog, then restored.
  */
 function printCertificate(actNumber: string | null): void {
   const originalTitle = document.title;
@@ -149,8 +150,6 @@ export function CertificatePreviewPage() {
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 
   // ── Success-confirmation state ─────────────────────────────────────────
-  // Shown after the delivery registers successfully AND the print dialog
-  // has closed. The single "Aceptar" action routes back to /certificates.
   const [successDialogOpen, setSuccessDialogOpen] = useState(false);
 
   useEffect(() => {
@@ -181,20 +180,13 @@ export function CertificatePreviewPage() {
       ([profile, history, institution, signers, actNumber]) => {
         if (cancelled) return;
 
-        // The student profile is the only truly required piece — without
-        // it there is nothing to certify.
         if (!profile) {
           setState({ kind: "missing-data" });
           return;
         }
 
-        // TEMPORARY: fall back to the placeholder institution when the
-        // API rejects the request (403 for Secretario / Rector today).
-        // Restore the strict check once the backend authorization is
-        // widened — see the comment on INSTITUTION_FALLBACK above.
         const institutionForPreview = institution ?? INSTITUTION_FALLBACK;
 
-        // Trim the academic history down to the selected enrollments.
         const enrollments = groupHistoryByEnrollment(history, enrollmentIds);
 
         const student: CertificateSearchStudent = {
@@ -210,7 +202,9 @@ export function CertificatePreviewPage() {
         setState({
           kind: "ready",
           data: {
-            actNumber,
+            // Single-element array during preview — the document
+            // falls back to it for every page.
+            actNumbers: [actNumber],
             student,
             institution: institutionForPreview,
             enrollments,
@@ -218,7 +212,6 @@ export function CertificatePreviewPage() {
             issueDate: formatIssueDate(),
           },
         });
-        // A fresh load always starts on the cover page.
         setPageIndex(0);
       }
     );
@@ -235,13 +228,8 @@ export function CertificatePreviewPage() {
       ? Math.max(state.data.enrollments.length, 1)
       : 1;
 
-  // Clamp on render rather than storing in state — the current index
-  // stays valid even if the total changes for any reason.
   const safePageIndex = Math.min(pageIndex, totalPages - 1);
 
-  // Reset the inner scroll to the top whenever the visible page changes,
-  // so the user always lands on the top edge of the new sheet — like
-  // flipping a page in a PDF viewer.
   useEffect(() => {
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
@@ -258,12 +246,6 @@ export function CertificatePreviewPage() {
 
   // ── Delivery dialog ─────────────────────────────────────────────────────
 
-  /**
-   * Opens the delivery registration dialog. Document types are fetched
-   * lazily on first open — the preview page already makes five parallel
-   * requests on mount, and the delivery catalog is only needed once the
-   * user actually commits to delivering.
-   */
   function openDeliveryDialog() {
     setDeliveryError(null);
     setDeliveryOpen(true);
@@ -279,29 +261,12 @@ export function CertificatePreviewPage() {
     }
   }
 
-  /**
-   * Dismiss the dialog WITHOUT leaving the preview page. Wired to the X
-   * button, Escape, and a click on the backdrop. The current certificate
-   * stays loaded, and the user can retry or navigate elsewhere.
-   */
   function closeDeliveryDialog() {
     if (isSubmittingDelivery) return;
     setDeliveryOpen(false);
     setDeliveryError(null);
   }
 
-  /**
-   * Called when the user clicks "Cancelar" inside the delivery dialog.
-   *
-   * Opens the cancel-confirmation dialog WITHOUT closing the delivery
-   * dialog, so dismissing the confirmation returns the user to the
-   * delivery form with its data intact (guidelines §66 — the user must
-   * always be able to answer "what can I do next?").
-   *
-   * The delivery dialog stays mounted underneath (its own close path is
-   * `onClose`, not `onCancel`), and the cancel dialog is layered above
-   * it at `z-60` vs `z-50`.
-   */
   function handleDeliveryCancel() {
     if (isSubmittingDelivery) return;
     setCancelDialogOpen(true);
@@ -309,67 +274,93 @@ export function CertificatePreviewPage() {
 
   async function handleDeliveryConfirm(data: CertificateDeliveryFormData) {
     const token = getToken();
-    if (!token) {
+    const payload = getTokenPayload();
+    if (!token || !payload) {
       setDeliveryError(
         "La sesión no está disponible. Vuelve a iniciar sesión e inténtalo de nuevo."
       );
       return;
     }
 
+    if (state.kind !== "ready") return;
+
     setIsSubmittingDelivery(true);
     setDeliveryError(null);
 
-    // NOTE: `relationship` is accepted by the dialog but not forwarded
-    // here — see the comment on `registerCertificateRecipientAction` for
-    // why (the backend has no matching column yet).
-    const result = await registerCertificateRecipientAction(token, {
+    // ── 1. Register the recipient (delivery actor) ─────────────────────
+    // `relationship` is one of the critical identification fields the
+    // backend uses to decide whether a returning recipient is the same
+    // person whose address should be updated.
+    const recipientResult = await registerCertificateRecipientAction(token, {
       firstName: data.firstName,
       middleName: data.middleName || undefined,
       lastName: data.lastName,
       secondLastName: data.secondLastName || undefined,
       documentTypeId: data.documentTypeId,
       documentNumber: data.documentNumber,
+      relationship: data.relationship,
       address: data.address,
       phones: data.phones,
     });
 
-    setIsSubmittingDelivery(false);
-
-    if (!result.success) {
-      setDeliveryError(result.message);
+    if (!recipientResult.success) {
+      setIsSubmittingDelivery(false);
+      setDeliveryError(recipientResult.message);
       return;
     }
 
-    // Success → close the delivery dialog, print, then confirm.
-    const actNumber =
-      state.kind === "ready" ? state.data.actNumber : null;
+    // ── 2. Persist one certificate per selected enrollment ─────────────
+    // This is the step that was missing before: the `certificado` table
+    // only gets a row once this call succeeds.
+    const certificateResult = await registerCertificatesAction(token, {
+      userId: String(payload.id),
+      institutionId: String(state.data.institution.id || 1),
+      enrollmentIds: state.data.enrollments.map((e) => e.enrollmentId),
+      recipientId: recipientResult.recipientId,
+      issueDate: toIsoDate(new Date()),
+    });
 
+    setIsSubmittingDelivery(false);
+
+    if (!certificateResult.success) {
+      // Surface both the failure message and (if partial) which numbers
+      // *did* get persisted, so the user knows what state the DB is in.
+      const partial =
+        certificateResult.actNumbers.length > 0
+          ? ` Se registraron ${certificateResult.actNumbers.length} certificado(s): ${certificateResult.actNumbers.join(", ")}.`
+          : "";
+      setDeliveryError(certificateResult.message + partial);
+      return;
+    }
+
+    // ── 3. Swap the preview act number(s) for the real ones ───────────
+    // The document re-renders with per-page numbers; the print dialog
+    // then captures the accurate document.
+    setState((prev) =>
+      prev.kind === "ready"
+        ? {
+            ...prev,
+            data: { ...prev.data, actNumbers: certificateResult.actNumbers },
+          }
+        : prev
+    );
+
+    // Close the delivery dialog.
     setDeliveryOpen(false);
     setDeliveryError(null);
 
-    // The trailing 60 ms delay lets React unmount the delivery dialog
-    // before the print dialog is captured — otherwise Safari and older
-    // Chromium builds may snapshot the modal into the printed page.
-    //
-    // `window.print()` is blocking, so `setSuccessDialogOpen(true)` runs
-    // only after the user closes (or cancels) the print dialog — the
-    // success confirmation lands on top of the preview page with no
-    // modal-in-modal overlap.
+    // ── 4. Print, then show the success confirmation ───────────────────
+    // 60 ms lets React unmount the delivery dialog and commit the
+    // act-number state update before the print dialog is captured.
+    const firstAct = certificateResult.actNumbers[0] ?? null;
     window.setTimeout(() => {
-      printCertificate(actNumber);
+      printCertificate(firstAct);
       setSuccessDialogOpen(true);
     }, 60);
   }
 
   // ── Success confirmation ────────────────────────────────────────────────
 
-  /**
-   * "Aceptar" on the success dialog. The certificate flow is complete:
-   * discard the enrollment selection (so a future visit to the preview
-   * starts fresh) and route back to the search page. The search session
-   * itself is NOT cleared — the user's filters and result rows stay
-   * intact, so they return to exactly where they left off.
-   */
   function handleSuccessAccept() {
     setSuccessDialogOpen(false);
     clearSelectedEnrollments();
@@ -378,32 +369,14 @@ export function CertificatePreviewPage() {
 
   // ── Cancel confirmation ─────────────────────────────────────────────────
 
-  /**
-   * Toolbar "Cancelar" → open the confirmation dialog rather than
-   * redirecting immediately. A generated certificate represents an
-   * institutional document, and the enrollment selection behind it may
-   * have taken several minutes to assemble — silently discarding it on
-   * a single click is far too easy to trigger by accident.
-   */
   function handleCancel() {
     setCancelDialogOpen(true);
   }
 
-  /**
-   * Dismiss the confirmation. The user keeps their place:
-   *   - Opened from the toolbar  → back to the preview page.
-   *   - Opened from the delivery dialog → the delivery form is still
-   *     mounted underneath, with its filled data intact.
-   */
   function handleCancelDialogClose() {
     setCancelDialogOpen(false);
   }
 
-  /**
-   * Confirm the cancellation. Closes any open dialogs, discards the
-   * enrollment selection, and routes to the dashboard — the exact
-   * behavior the toolbar's "Cancelar" button used to have.
-   */
   function handleCancelDialogConfirm() {
     setCancelDialogOpen(false);
     setDeliveryOpen(false);
@@ -480,7 +453,7 @@ export function CertificatePreviewPage() {
             {/* Toolbar — never scrolls, always visible. */}
             <div className="shrink-0 print:hidden">
               <Toolbar
-                actNumber={state.data.actNumber}
+                actNumbers={state.data.actNumbers}
                 totalPages={totalPages}
                 onPrint={handlePrint}
                 onCancel={handleCancel}
@@ -491,10 +464,6 @@ export function CertificatePreviewPage() {
              * The ONLY scroller on the page. Everything above (toolbar)
              * and below (pagination) stays anchored to the viewport edge
              * regardless of how far the user scrolls the certificate.
-             *
-             * `[scrollbar-gutter:stable]` reserves the scrollbar's width
-             * up front, so the certificate's width-fit scale doesn't
-             * oscillate as the scrollbar appears/disappears.
              */}
             <div
               ref={scrollContainerRef}
@@ -509,7 +478,7 @@ export function CertificatePreviewPage() {
               "
             >
               <CertificateDocument
-                actNumber={state.data.actNumber}
+                actNumbers={state.data.actNumbers}
                 student={state.data.student}
                 institution={state.data.institution}
                 enrollments={state.data.enrollments}
@@ -521,8 +490,6 @@ export function CertificatePreviewPage() {
 
             {/*
              * Pagination is only useful when there is more than one page.
-             * A single-page certificate renders without any chrome below
-             * the document — cleaner and one less element to explain.
              */}
             {totalPages > 1 && (
               <div className="shrink-0 print:hidden">
@@ -540,14 +507,8 @@ export function CertificatePreviewPage() {
 
       {/*
        * Delivery registration modal — the print action only fires after
-       * the recipient has been registered against the API.
-       *
-       * Two distinct exits:
-       *   - onClose  → dismiss this dialog, keep the preview open
-       *   - onCancel → open the cancel-confirmation on top. This dialog
-       *                stays mounted underneath, so dismissing the
-       *                confirmation returns the user to their filled
-       *                delivery form.
+       * the recipient has been registered against the API and the
+       * certificate has been persisted.
        */}
       <CertificateDeliveryDialog
         open={deliveryOpen}
@@ -562,9 +523,7 @@ export function CertificatePreviewPage() {
 
       {/*
        * Cancel-confirmation modal. Layered above the delivery dialog
-       * (z-60 vs z-50) so it can appear on top of it. Dismissing returns
-       * the user to whatever they were doing; confirming clears the
-       * enrollment selection and routes to /dashboard.
+       * (z-60 vs z-50).
        */}
       <CertificateCancelDialog
         open={cancelDialogOpen}
@@ -574,9 +533,7 @@ export function CertificatePreviewPage() {
 
       {/*
        * Success-confirmation modal. Layered above both of the above
-       * (z-70). Not dismissable by backdrop, Escape, or X — the only
-       * path forward is "Aceptar", which routes to /certificates so the
-       * user can search for the next student.
+       * (z-70). Not dismissable by backdrop, Escape, or X.
        */}
       <CertificateSuccessDialog
         open={successDialogOpen}
@@ -589,16 +546,26 @@ export function CertificatePreviewPage() {
 // ── Toolbar ─────────────────────────────────────────────────────────────────
 
 function Toolbar({
-  actNumber,
+  actNumbers,
   totalPages,
   onPrint,
   onCancel,
 }: {
-  actNumber: string | null;
+  actNumbers: (string | null)[];
   totalPages: number;
   onPrint: () => void;
   onCancel: () => void;
 }) {
+  // Show the range when more than one number is known (post-persistence),
+  // otherwise the single previewed number (preview phase).
+  const clean = actNumbers.filter((n): n is string => typeof n === "string");
+  const actLabel =
+    clean.length === 0
+      ? "—"
+      : clean.length === 1
+        ? `N° ${clean[0]}`
+        : `N° ${clean[0]} a ${clean[clean.length - 1]}`;
+
   return (
     <div
       className="
@@ -613,7 +580,7 @@ function Toolbar({
           certificado —
         </p>
         <p className="text-lg font-extrabold text-[#1F2937] tabular-nums sm:text-xl">
-          N° {actNumber ?? "—"}
+          {actLabel}
         </p>
         <p className="mt-0.5 text-xs text-gray-500">
           {totalPages} {totalPages === 1 ? "página" : "páginas"}
@@ -676,28 +643,12 @@ function ToolbarButton({
 
 // ── Pagination footer ──────────────────────────────────────────────────────
 
-/**
- * Prev / next page navigation for the on-screen certificate carousel.
- *
- * Styled to match the enrollment-selection carousel (soft-blue circular
- * chevron buttons flanking a centered label) so the two views feel like
- * the same flow. Only rendered when the certificate has more than one
- * page — a single-page certificate needs no navigation.
- *
- * Accessibility:
- *   - The wrapper is a `<nav>` with a descriptive `aria-label`.
- *   - Each button carries its own `aria-label` and a real `disabled`
- *     state (not just a visual one).
- *   - The "Página X de Y" text uses `aria-live="polite"` so a screen
- *     reader announces the new page when the user presses a chevron.
- */
 function PaginationControls({
   currentPage,
   totalPages,
   onPrev,
   onNext,
 }: {
-  /** Zero-based index of the page currently shown. */
   currentPage: number;
   totalPages: number;
   onPrev: () => void;
@@ -842,7 +793,7 @@ function MissingDataState() {
           shadow-sm transition
           hover:bg-[#3250a8]
           focus-visible:ring-4 focus-visible:ring-[#3B5FC7]/30
-          focus-visible:outline-none
+          focus-visible:focus-visible:outline-none
           active:translate-y-px
         "
       >

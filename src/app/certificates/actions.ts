@@ -346,10 +346,13 @@ export async function fetchStudentProfileAction(
   }
 
   // ── Certificates ─────────────────────────────────────────────────────
-  // One certificate per enrollment (`certificado.id_matricula_certificado`
-  // is UNIQUE on the backend), so the student's certificate count is
-  // exactly the number of enrollments that already have a certificate.
-  // See `countCertificatesForEnrollments` for the failure semantics.
+  // One certificate per enrollment is no longer the rule: a certificate
+  // now covers one OR MANY enrollments through the 'certificado_matricula'
+  // bridge table. The bridge still enforces UNIQUE on id_matricula, so an
+  // enrollment belongs to at most one certificate. Counting certificates
+  // for a student therefore still reduces to "how many of this student's
+  // enrollments are linked to a certificate", which is what
+  // `countCertificatesForEnrollments` measures.
   const certificateCount = await countCertificatesForEnrollments(
     API_URL,
     authHeaders,
@@ -692,6 +695,11 @@ export async function fetchCertificateSignersAction(
 // created today, WITHOUT creating it — the service only reads the highest
 // existing consecutive for the current year and increments it. Safe to
 // call on every preview mount.
+//
+// NOTE: this number is a preview only. The authoritative number is the
+// one returned by `registerCertificatesAction` after the certificate is
+// actually persisted. The two can differ if another user issues a
+// certificate between the preview and the confirmation.
 
 type NextActNumberApiBody = {
   actNumber?: unknown;
@@ -728,6 +736,188 @@ export async function fetchNextActNumberAction(
   }
 }
 
+// ── Certificate creation (persist the record) ──────────────────────────────
+//
+// Backing endpoint: POST /certificates/create
+//
+// ONE certificate covers ONE OR MANY enrollments. The certificate row is
+// inserted into `certificado` and each enrollment is linked through the
+// bridge table `certificado_matricula` inside a single transaction:
+// either the whole group is committed or nothing is.
+//
+// The bridge enforces UNIQUE on `id_matricula`, so an enrollment can
+// belong to AT MOST ONE certificate. A retry that tries to re-link an
+// already-linked enrollment will fail with 409 (conflict), which we
+// surface to the user instead of silently succeeding — the batch can't
+// be idempotently resolved when only some enrollments are already taken.
+//
+// The act number ('YY-NNN') is generated server-side and covers the
+// WHOLE certificate, so a single number is returned for the whole batch.
+// The preview document renders it on every page via its fallback logic
+// (`actNumbers[index] ?? firstActNumber`).
+//
+// `issueDate` is sent as `YYYY-MM-DD`, matching the backend's DATEONLY
+// column and its `Joi.date()` validator.
+
+export type RegisterCertificatesInput = {
+  userId: string;
+  institutionId: string;
+  /** One or more enrollment ids — the certificate's full scope. */
+  enrollmentIds: number[];
+  recipientId: number;
+  /** `YYYY-MM-DD` in the institution's timezone. */
+  issueDate: string;
+};
+
+export type RegisterCertificatesResult =
+  | { success: true; actNumbers: string[] }
+  | { success: false; message: string; actNumbers: string[] };
+
+const REGISTER_CERT_ERROR_MESSAGES = {
+  generic:
+    "No se pudo registrar el certificado. Inténtelo de nuevo.",
+  forbidden:
+    "Tu rol no tiene permiso para generar certificados. Contacta al administrador.",
+  sessionExpired:
+    "La sesión expiró. Vuelve a iniciar sesión e inténtalo de nuevo.",
+  conflict:
+    "Una o más de las matrículas seleccionadas ya tienen un certificado emitido. " +
+    "Quita esas matrículas de la selección o consulta el repositorio de certificados.",
+  system:
+    "El sistema está experimentando problemas. Por favor, inténtelo de nuevo más tarde.",
+} as const;
+
+export async function registerCertificatesAction(
+  token: string,
+  input: RegisterCertificatesInput
+): Promise<RegisterCertificatesResult> {
+  if (!API_URL || !API_KEY || !token) {
+    return {
+      success: false,
+      message: REGISTER_CERT_ERROR_MESSAGES.system,
+      actNumbers: [],
+    };
+  }
+
+  if (input.enrollmentIds.length === 0) {
+    return {
+      success: false,
+      message:
+        "Debe seleccionar al menos una matrícula para generar el certificado.",
+      actNumbers: [],
+    };
+  }
+
+  const authHeaders = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    apikey: API_KEY,
+    Authorization: `Bearer ${token}`,
+  };
+
+  try {
+    const res = await fetch(`${API_URL}/certificates/create`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        issueDate: input.issueDate,
+        userId: input.userId,
+        institutionId: input.institutionId,
+        // ONE certificate → MANY enrollments, linked through
+        // `certificado_matricula`. The backend rejects this call with a
+        // 400 if any enrollment is missing from the array or has a bad
+        // shape — see `certificateSchema.newCertificateData`.
+        enrollmentIds: input.enrollmentIds.map(String),
+        recipientId: String(input.recipientId),
+        // status omitted → backend defaults to 'EMITIDO'
+      }),
+      cache: "no-store",
+    });
+
+    // ── 401 — session expired or revoked ──────────────────────────
+    if (res.status === 401) {
+      return {
+        success: false,
+        message: REGISTER_CERT_ERROR_MESSAGES.sessionExpired,
+        actNumbers: [],
+      };
+    }
+
+    // ── 403 — role not allowed to issue certificates ──────────────
+    if (res.status === 403) {
+      return {
+        success: false,
+        message: REGISTER_CERT_ERROR_MESSAGES.forbidden,
+        actNumbers: [],
+      };
+    }
+
+    // ── 409 — one of the enrollments already has a certificate ────
+    // The bridge enforces UNIQUE on id_matricula; the service rejects
+    // the whole batch with a conflict when any enrollment is already
+    // linked, so the transaction stays atomic and no partial certificate
+    // is written.
+    if (res.status === 409) {
+      return {
+        success: false,
+        message: REGISTER_CERT_ERROR_MESSAGES.conflict,
+        actNumbers: [],
+      };
+    }
+
+    // ── Any other non-2xx ─────────────────────────────────────────
+    if (!res.ok) {
+      let serverMessage: string | null = null;
+      try {
+        const errBody = (await res.json()) as { message?: unknown };
+        if (typeof errBody.message === "string" && errBody.message.length > 0) {
+          serverMessage = errBody.message;
+        }
+      } catch {
+        /* non-JSON body — fall back to the generic message */
+      }
+
+      console.warn(
+        `[registerCertificatesAction] certificates/create → ${res.status}`,
+        serverMessage
+      );
+
+      return {
+        success: false,
+        message: serverMessage ?? REGISTER_CERT_ERROR_MESSAGES.generic,
+        actNumbers: [],
+      };
+    }
+
+    // ── 201 — parse the act number ────────────────────────────────
+    const body = (await res.json()) as { actNumber?: unknown };
+
+    if (typeof body.actNumber !== "string" || body.actNumber.length === 0) {
+      console.warn(
+        "[registerCertificatesAction] certificates/create OK but no actNumber:",
+        body
+      );
+      return {
+        success: false,
+        message: REGISTER_CERT_ERROR_MESSAGES.generic,
+        actNumbers: [],
+      };
+    }
+
+    // A single act number covers every page of this certificate. The
+    // `CertificateDocument` fallback (`actNumbers[index] ?? firstActNumber`)
+    // renders it on each page, so a one-element array is the correct shape.
+    return { success: true, actNumbers: [body.actNumber] };
+  } catch (error) {
+    console.warn("[registerCertificatesAction] request failed:", error);
+    return {
+      success: false,
+      message: REGISTER_CERT_ERROR_MESSAGES.system,
+      actNumbers: [],
+    };
+  }
+}
+
 // ── Certificate recipient registration (delivery flow) ─────────────────────
 //
 // Called from the delivery-registration dialog on the preview page when
@@ -736,11 +926,17 @@ export async function fetchNextActNumberAction(
 // endpoints returns the newly-assigned id:
 //
 //   1. POST /certificate-recipients/create
-//      → 409 if the recipient already exists (treated as success, since
-//      documentNumber is UNIQUE and re-registering the same person is
-//      a legitimate reprint scenario).
+//        → 201 if the recipient was newly created.
+//        → 200 if a recipient with the same document number already
+//          existed AND its critical identification fields (firstName,
+//          lastName, documentTypeId, documentNumber, relationship)
+//          matched. The backend updates the stored address with the
+//          one submitted and returns success.
+//        → 409 if a recipient with the same document number exists but
+//          its critical fields DO NOT match — a data-entry conflict
+//          the operator must resolve. Surface this as a hard error.
 //   2. POST /certificate-recipients/get-by-document-number
-//      → resolves the recipient's id.
+//        → resolves the recipient's id (both 200 and 201 paths need it).
 //   3. For each phone:
 //        a. POST /phones/get-by-number → 404 means "not yet in catalog"
 //        b. POST /phones/create        → 409 tolerated (race)
@@ -750,17 +946,9 @@ export async function fetchNextActNumberAction(
 //           recipient — a 409 caused by a different owner is surfaced
 //           as a real error; see isPhoneLinkedToRecipient below)
 //
-// NOTE on `relationship`: the mockup shows a "Parentesco o relación"
-// field, but `receptor_certificado` has no matching column and the Joi
-// schema rejects unknown keys by omission. The field is accepted in the
-// UI for parity with the wireframe but is NOT sent here — a silent
-// drop is better than a 400. When the backend grows a
-// `relacion_receptor_certificado` column, forward it in step 1.
-//
-// NOTE on certificate linking: `PATCH /certificates/update` accepts a
-// `recipientId`, but no certificate row exists yet at preview time — the
-// preview page only shows a *previewed* act number. Wire this once
-// certificate creation is implemented in the generation step.
+// The `relationship` field IS forwarded now: it is one of the critical
+// identification fields the backend uses to decide whether a returning
+// recipient is the same person, so it must travel with the payload.
 
 export type RegisterCertificateRecipientInput = {
   firstName: string;
@@ -769,6 +957,7 @@ export type RegisterCertificateRecipientInput = {
   secondLastName?: string;
   documentTypeId: string;
   documentNumber: string;
+  relationship: string;
   address: string;
   /** One or more phone numbers. Empty strings are dropped. */
   phones: string[];
@@ -794,9 +983,30 @@ const RECIPIENT_ERROR_MESSAGES = {
     `El teléfono ${number} ya está vinculado a otro registro ` +
     `(usuario, estudiante, institución o receptor). ` +
     `Desvincúlalo primero o usa un número distinto.`,
+  identityMismatch:
+    "Ya existe un receptor del certificado con el mismo número de documento, " +
+    "pero sus datos de identificación no coinciden (nombre, primer apellido, " +
+    "tipo de documento o parentesco). Verifica la información ingresada.",
   system:
     "El sistema está experimentando problemas. Por favor, inténtelo de nuevo más tarde.",
 } as const;
+
+/**
+ * Reads the server's `message` field from a non-2xx response body.
+ * Returns `null` when the body is missing, not JSON, or has no string
+ * `message` — so the caller can fall back to a generic string without
+ * having to special-case every failure mode.
+ */
+async function readServerMessage(res: Response): Promise<string | null> {
+  try {
+    const body = (await res.json()) as { message?: unknown };
+    return typeof body.message === "string" && body.message.length > 0
+      ? body.message
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function registerCertificateRecipientAction(
   token: string,
@@ -814,7 +1024,11 @@ export async function registerCertificateRecipientAction(
   };
 
   try {
-    // ── 1. Create recipient (409 = already exists → OK) ────────────────
+    // ── 1. Create-or-update recipient ──────────────────────────────────
+    // The backend decides between create and update based on the stored
+    // document number. A 200 response means "existing recipient with
+    // matching identity — address refreshed"; a 201 means "new recipient".
+    // Both are successful.
     const createRes = await fetch(`${API_URL}/certificate-recipients/create`, {
       method: "POST",
       headers: authHeaders,
@@ -825,13 +1039,68 @@ export async function registerCertificateRecipientAction(
         secondLastName: input.secondLastName ?? "",
         documentTypeId: input.documentTypeId,
         documentNumber: input.documentNumber,
+        relationship: input.relationship,
         address: input.address,
       }),
       cache: "no-store",
     });
 
-    if (!createRes.ok && createRes.status !== 409) {
-      return { success: false, message: RECIPIENT_ERROR_MESSAGES.generic };
+    // ── Non-2xx handling ─────────────────────────────────────────────
+    // Every failure branch now attempts to surface the server's own
+    // `message` — a Boom error payload carries a specific, user-actionable
+    // string (e.g. "document type does not exist", "recipient identity
+    // mismatch"), which is strictly more useful than the generic
+    // fallback. Falls back to the generic string only when the body
+    // isn't JSON or has no message.
+    if (!createRes.ok) {
+      const serverMessage = await readServerMessage(createRes);
+
+      console.warn(
+        `[registerCertificateRecipientAction] certificate-recipients/create → ${createRes.status}`,
+        serverMessage
+      );
+
+      // 409 → a recipient with this document number already exists but
+      // their stored identity does not match what was submitted. This
+      // is a data-entry conflict the operator must resolve. Prefer the
+      // server's message when available, since the backend's wording is
+      // the one that names the mismatched fields.
+      if (createRes.status === 409) {
+        return {
+          success: false,
+          message: serverMessage ?? RECIPIENT_ERROR_MESSAGES.identityMismatch,
+        };
+      }
+
+      // 401 → the session expired between the preview page load and this
+      // call. Surface the session-expired copy so the user knows to log
+      // in again rather than retrying the same form.
+      if (createRes.status === 401) {
+        return {
+          success: false,
+          message:
+            "La sesión expiró. Vuelve a iniciar sesión e inténtalo de nuevo.",
+        };
+      }
+
+      // 403 → the role is not allowed to create recipients. Theoretically
+      // unreachable here because the /certificates route already gates on
+      // role, but the backend independently enforces authorization — a
+      // role change mid-session or a token tampering attempt would land
+      // here.
+      if (createRes.status === 403) {
+        return {
+          success: false,
+          message:
+            "Tu rol no tiene permiso para registrar receptores de certificado. " +
+            "Contacta al administrador.",
+        };
+      }
+
+      return {
+        success: false,
+        message: serverMessage ?? RECIPIENT_ERROR_MESSAGES.generic,
+      };
     }
 
     // ── 2. Resolve recipient id ────────────────────────────────────────
@@ -846,7 +1115,15 @@ export async function registerCertificateRecipientAction(
     );
 
     if (!getRes.ok) {
-      return { success: false, message: RECIPIENT_ERROR_MESSAGES.fetchRecipient };
+      const serverMessage = await readServerMessage(getRes);
+      console.warn(
+        `[registerCertificateRecipientAction] get-by-document-number → ${getRes.status}`,
+        serverMessage
+      );
+      return {
+        success: false,
+        message: serverMessage ?? RECIPIENT_ERROR_MESSAGES.fetchRecipient,
+      };
     }
 
     const getBody = (await getRes.json()) as {
@@ -855,30 +1132,13 @@ export async function registerCertificateRecipientAction(
     const recipientId = getBody.certificateRecipient?.id;
 
     if (typeof recipientId !== "number") {
-      return { success: false, message: RECIPIENT_ERROR_MESSAGES.fetchRecipient };
+      return {
+        success: false,
+        message: RECIPIENT_ERROR_MESSAGES.fetchRecipient,
+      };
     }
 
     // ── 3. Create + link each phone ────────────────────────────────────
-    //
-    // The `resolveOrCreatePhoneId` helper returns a discriminated union
-    // so each failure mode gets a message that actually describes what
-    // went wrong, instead of the one-size-fits-all "no pudimos recuperar
-    // el identificador del teléfono":
-    //
-    //   • "forbidden" → the session's role cannot read the phone
-    //                   catalog. The backend's role allow-list on
-    //                   POST /phones/get-by-number must include the
-    //                   delivery roles; until then, the user gets a
-    //                   message telling them to contact the admin.
-    //   • "failed"    → transient error (network, 5xx, malformed body).
-    //                   Retrying helps.
-    //
-    // The 409 from the link call is disambiguated via
-    // `isPhoneLinkedToRecipient`:
-    //
-    //   • already linked to THIS recipient → silent success
-    //   • linked to a different owner      → real error, surfaced
-    //   • anything else                    → generic link error
     for (const raw of input.phones) {
       const number = raw.trim();
       if (!number) continue;
@@ -917,7 +1177,6 @@ export async function registerCertificateRecipientAction(
       );
 
       if (linkRes.ok) {
-        // First-time link — done with this phone.
         continue;
       }
 
@@ -930,29 +1189,28 @@ export async function registerCertificateRecipientAction(
         );
 
         if (alreadyLinked) {
-          // The phone was already ours from a previous delivery. Nothing
-          // more to do — a legitimate no-op, not a failure.
           continue;
         }
 
-        // The phone exists but belongs to a DIFFERENT owner (another
-        // recipient, or a User / Student / Institution via the
-        // cross-bridge ownership rule). The current recipient cannot
-        // claim it until that other owner releases it.
         return {
           success: false,
           message: RECIPIENT_ERROR_MESSAGES.phoneOwnedByOther(number),
         };
       }
 
+      const serverMessage = await readServerMessage(linkRes);
       return {
         success: false,
-        message: RECIPIENT_ERROR_MESSAGES.linkPhone(number),
+        message: serverMessage ?? RECIPIENT_ERROR_MESSAGES.linkPhone(number),
       };
     }
 
     return { success: true, recipientId };
-  } catch {
+  } catch (error) {
+    console.warn(
+      "[registerCertificateRecipientAction] request failed:",
+      error
+    );
     return { success: false, message: RECIPIENT_ERROR_MESSAGES.system };
   }
 }
@@ -968,19 +1226,9 @@ export async function registerCertificateRecipientAction(
  *
  *   • { kind: "ok", phoneId }  → phone exists (or was created), id known
  *   • { kind: "forbidden" }    → the current session's role cannot read
- *                                the phone catalog. The backend's role
- *                                allow-list on POST /phones/get-by-number
- *                                must include the delivery roles (Rector,
- *                                Secretario); see routes/phoneRouter.js.
+ *                                the phone catalog.
  *   • { kind: "failed" }       → transient error (network, 5xx, malformed
  *                                response). Retrying helps.
- *
- * The lookup → create → lookup dance is required because
- * `POST /phones/create` does not return the newly-assigned id, and there
- * is no other read endpoint the delivery roles can reach. A 409 on the
- * create call is tolerated: it means the phone was inserted between our
- * lookup and our create (typically by a prior delivery request, or a
- * concurrent one), and the second lookup resolves the id either way.
  */
 async function resolveOrCreatePhoneId(
   authHeaders: Record<string, string>,
@@ -1014,15 +1262,10 @@ async function resolveOrCreatePhoneId(
       : { kind: "failed" };
   };
 
-  // First lookup: is the phone already in the catalog?
   const first = await lookup();
   if (first.kind === "ok") return first;
   if (first.kind === "forbidden") return first;
 
-  // Not found (or transient error) → try to create it. A 409 means the
-  // phone was created between our lookup and our create — likely by a
-  // previous delivery request, or a concurrent one. Either way, re-fetch
-  // to resolve the id.
   const createRes = await fetch(`${apiUrl}/phones/create`, {
     method: "POST",
     headers: authHeaders,
@@ -1044,26 +1287,9 @@ async function resolveOrCreatePhoneId(
  * Returns `true` if `phoneId` is already among the phones linked to
  * `recipientId`.
  *
- * Used to disambiguate a 409 from
- * `POST /certificate-recipient-phones/create`: the endpoint returns the
- * same status when (a) the link already exists (fine) and when (b) the
- * phone belongs to a different owner (real conflict). Only (a) should be
- * swallowed as success — otherwise the dialog reports success while the
- * phone is silently left unlinked from the newly-registered recipient.
- *
- * `get-by-certificate-recipient` is reachable by every role that can
- * register a delivery (Máster / Administrador / Rector / Secretario),
- * which is why we use it instead of the singular
- * `get-by-certificate-recipient-and-phone` (admin-only). The list is
- * small — one row per phone linked to one recipient — so the O(n) scan
- * is fine.
- *
  * Failure semantics: on any error (non-2xx, malformed body, network
- * failure) we return `false`. That deliberately biases the caller
- * toward treating the 409 as a real conflict rather than a silent
- * success. A false negative is far safer here — the user is told to
- * intervene instead of being told the phone was registered when it
- * wasn't.
+ * failure) we return `false` — deliberately biased toward treating the
+ * 409 as a real conflict rather than a silent success.
  */
 async function isPhoneLinkedToRecipient(
   authHeaders: Record<string, string>,
@@ -1106,22 +1332,16 @@ async function isPhoneLinkedToRecipient(
  * Counts how many of the given enrollments already have a certificate
  * issued for them.
  *
- * Backend contract (`POST /certificates/get-by-enrollment`):
- *   200 → { certificate: { ... } }  → this enrollment has a certificate
- *   404 → no certificate for this enrollment (expected, not an error)
- *   any other status → unexpected; the total cannot be trusted
+ * Backing endpoint: POST /certificates/get-by-enrollment
+ * Because the bridge table enforces UNIQUE on `id_matricula`, at most
+ * one certificate can ever own a given enrollment — a 200 means "this
+ * enrollment is certified", a 404 means "not yet".
  *
  * Failure semantics:
  *   - A 404 is counted as "no certificate" and does NOT poison the
  *     total — it is the normal state for an enrollment that has not
  *     yet been certified.
- *   - Any other non-2xx status (403 role mismatch, 5xx, network error)
- *     collapses the whole result to `null`, so the UI renders "—"
- *     instead of a partial count that could be mistaken for a real
- *     number.
- *
- * `enrollmentId` is sent as a STRING because the backend's Joi schema
- * validates it with `Joi.string().pattern(/^\d{1,10}$/)`.
+ *   - Any other non-2xx status collapses the whole result to `null`.
  */
 async function countCertificatesForEnrollments(
   apiUrl: string,
@@ -1162,7 +1382,6 @@ async function countCertificatesForEnrollments(
       );
       return null;
     }
-    // 404 falls through silently: "no certificate yet" is the normal case.
   }
 
   return count;
