@@ -1386,3 +1386,83 @@ async function countCertificatesForEnrollments(
 
   return count;
 }
+
+// ── Certificate repository (paginated listing with filters) ────────────────
+//
+// Backing endpoint: POST /certificates/list-paginated
+// Returns one page of certificates plus the total count, so the pager
+// can render "Página X de Y" without a second round trip.
+//
+// The backend enforces offset/limit (1..100) and matches the JWT role
+// against ['Máster', 'Administrador', 'Rector', 'Secretario'].
+
+import type {
+  CertificateRepositoryRow,
+} from "@/types/certificate-repository";
+
+export type CertificateRepositoryApiPage = {
+  total: number;
+  offset: number;
+  limit: number;
+  certificates: CertificateRepositoryRow[];
+};
+
+export async function fetchCertificatesRepositoryAction(
+  token: string,
+  params: {
+    offset: number;
+    limit: number;
+    filters: Record<string, string>;
+  }
+): Promise<CertificateRepositoryApiPage> {
+  const empty: CertificateRepositoryApiPage = {
+    total: 0,
+    offset: params.offset,
+    limit: params.limit,
+    certificates: [],
+  };
+
+  if (!API_URL || !API_KEY || !token) return empty;
+
+  try {
+    const res = await fetch(`${API_URL}/certificates/list-paginated`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        apikey: API_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        offset: params.offset,
+        limit: params.limit,
+        filters: params.filters,
+      }),
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      console.warn(
+        `[fetchCertificatesRepositoryAction] certificates/list-paginated → ${res.status}`
+      );
+      return empty;
+    }
+
+    const body = (await res.json()) as Partial<CertificateRepositoryApiPage>;
+
+    if (!Array.isArray(body.certificates)) return empty;
+
+    return {
+      total: typeof body.total === "number" ? body.total : 0,
+      offset: typeof body.offset === "number" ? body.offset : params.offset,
+      limit: typeof body.limit === "number" ? body.limit : params.limit,
+      certificates: body.certificates,
+    };
+  } catch (error) {
+    console.warn(
+      "[fetchCertificatesRepositoryAction] request failed:",
+      error
+    );
+    return empty;
+  }
+}
